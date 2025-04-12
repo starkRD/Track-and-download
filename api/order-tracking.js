@@ -2,19 +2,23 @@ import { google } from 'googleapis';
 import Shopify from 'shopify-api-node';
 
 export default async function handler(req, res) {
-  // ✅ Handle CORS
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET');
+  // ✅ Handle CORS for Shopify frontend
+  res.setHeader('Access-Control-Allow-Origin', 'https://songcart.in'); // <-- UPDATE this to match your real frontend origin
+  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
 
   const query = req.query.query;
   if (!query) return res.status(400).json({ error: 'Missing query parameter' });
 
   try {
-    // 🔐 Auth with Google Service Account
+    // 🔐 Authenticate with Google
     const auth = new google.auth.GoogleAuth({
       credentials: {
-        client_email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+        client_email: process.env.GOOGLE_CLIENT_EMAIL,
         private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
       },
       scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
@@ -25,7 +29,7 @@ export default async function handler(req, res) {
 
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetId,
-      range: 'Sheet1!A2:E', // Assuming headers are in row 1
+      range: 'Sheet1!A2:E', // assuming row 1 is headers
     });
 
     const rows = response.data.values || [];
@@ -47,7 +51,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // 🛍️ Fetch Shopify order using Order ID as fallback
+    // 🛍️ Optional: Shopify order info
     let shopifyOrder = null;
     try {
       const shopify = new Shopify({
@@ -72,8 +76,9 @@ export default async function handler(req, res) {
       mp3Link: songRow.mp3Link,
       order: shopifyOrder,
     });
-  } catch (error) {
-    console.error('❌ Google Sheet fetch failed:', error.message);
+
+  } catch (err) {
+    console.error('❌ Google Sheet fetch failed:', err.message);
     return res.status(500).json({ error: 'Google Sheet fetch failed' });
   }
 }
