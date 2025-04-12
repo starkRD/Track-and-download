@@ -18,11 +18,7 @@ module.exports = async (req, res) => {
     const credentials = JSON.parse(fileContents);
 
     const auth = new google.auth.GoogleAuth({
-      credentials: {
-        client_email: credentials.client_email,
-        private_key: credentials.private_key.replace(/\\n/g, '\n'),
-      },
-      projectId: credentials.project_id,
+      credentials,
       scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
     });
 
@@ -34,17 +30,19 @@ module.exports = async (req, res) => {
     });
 
     const rows = response.data.values;
+
     if (!rows || rows.length < 2) {
-      return res.status(200).json({ isSongReady: false });
+      return res.status(404).json({ error: 'No data found in the sheet.' });
     }
 
     let matchedRow = null;
+
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
-      const orderId = row[1]?.trim();
-      const email = row[2]?.trim();
-      const driveLink = row[3]?.trim();
-      const readyStatus = row[4]?.trim().toLowerCase();
+      const orderId = (row[1] || '').trim();
+      const email = (row[2] || '').trim();
+      const driveLink = (row[3] || '').trim();
+      const readyStatus = (row[4] || '').trim().toLowerCase();
 
       if ((orderId === query || email === query) && readyStatus === 'yes') {
         matchedRow = {
@@ -63,13 +61,13 @@ module.exports = async (req, res) => {
 
     return res.json(matchedRow);
   } catch (error) {
-    console.error('Google Sheets API Error:', error.message);
-    console.error(error.stack);
+    console.error('Google Sheet fetch failed:', error);
     res.status(500).json({ error: 'Google Sheet fetch failed' });
   }
 };
 
 function convertToDirectDownloadLink(shareLink) {
+  if (!shareLink) return '';
   const match = shareLink.match(/\/d\/(.*?)\//);
   if (match && match[1]) {
     return `https://drive.google.com/uc?export=download&id=${match[1]}`;
