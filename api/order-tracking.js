@@ -2,20 +2,14 @@ import { google } from 'googleapis';
 import Shopify from 'shopify-api-node';
 
 export default async function handler(req, res) {
-  // ✅ Handle CORS for Shopify frontend
-  res.setHeader('Access-Control-Allow-Origin', 'https://songcart.in'); // <-- UPDATE this to match your real frontend origin
-  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
 
   const query = req.query.query;
   if (!query) return res.status(400).json({ error: 'Missing query parameter' });
 
   try {
-    // 🔐 Authenticate with Google
     const auth = new google.auth.GoogleAuth({
       credentials: {
         client_email: process.env.GOOGLE_CLIENT_EMAIL,
@@ -29,7 +23,7 @@ export default async function handler(req, res) {
 
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetId,
-      range: 'Sheet1!A2:E', // assuming row 1 is headers
+      range: 'Sheet1!A2:E',
     });
 
     const rows = response.data.values || [];
@@ -51,7 +45,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // 🛍️ Optional: Shopify order info
+    // Attempt to fetch Shopify Order
     let shopifyOrder = null;
     try {
       const shopify = new Shopify({
@@ -67,6 +61,46 @@ export default async function handler(req, res) {
       console.warn('⚠️ Shopify fetch failed:', err.message);
     }
 
+    // Determine delivery timeline
+    let deliveryHours = 240; // default fallback
+    if (shopifyOrder && shopifyOrder.line_items) {
+      const variantMap = {
+        "41290369269835": 240, // Beast
+        "41290369302603": 120, // Premium
+        "41274164510795": 120,
+        "41290369335371": 30,  // Premium
+        "41290369368139": 30,  // Premium
+        "41274164543563": 48,
+        "41274164576331": 24
+      };
+
+      const times = shopifyOrder.line_items
+        .map(item => variantMap[item.variant_id?.toString()])
+        .filter(Boolean);
+
+      if (times.length) deliveryHours = Math.min(...times);
+    }
+
+    // Compute dates
+    let createdAt = shopifyOrder?.created_at || new Date().toISOString();
+    const orderDate = new Date(createdAt);
+    const deliveryDeadline = new Date(orderDate.getTime() + deliveryHours * 60 * 60 * 1000);
+
+    // Determine current status
+    const now = new Date();
+    let fulfillmentStatus = (shopifyOrder?.fulfillment_status || "").toLowerCase();
+    let currentStatus = "Order Received";
+
+    const elapsedHours = (now - orderDate) / 3600000;
+    if (elapsedHours >= deliveryHours) currentStatus = "Order Ready";
+    if (elapsedHours >= deliveryHours * 0.8) currentStatus = "Final Editing";
+    if (elapsedHours >= deliveryHours * 0.5) currentStatus = "Song Production";
+    if (elapsedHours >= deliveryHours * 0.2) currentStatus = "Lyrics Composition";
+
+    if (fulfillmentStatus === "fulfilled" || now >= deliveryDeadline) {
+      currentStatus = "Delivered";
+    }
+
     if (!songRow) {
       return res.status(404).json({ error: 'Order not found in Google Sheet' });
     }
@@ -74,11 +108,17 @@ export default async function handler(req, res) {
     return res.status(200).json({
       isSongReady: songRow.isReady,
       mp3Link: songRow.mp3Link,
-      order: shopifyOrder,
+      order: {
+        ...shopifyOrder,
+        deliveryHours,
+        currentStatus,
+        orderDate,
+        deliveryDeadline,
+      },
     });
 
-  } catch (err) {
-    console.error('❌ Google Sheet fetch failed:', err.message);
+  } catch (error) {
+    console.error('❌ Google Sheet fetch failed:', error.message);
     return res.status(500).json({ error: 'Google Sheet fetch failed' });
   }
 }
