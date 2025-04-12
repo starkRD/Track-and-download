@@ -1,1 +1,5 @@
-songcart-order-tracker.json
+{
+  "client_email": "xxx@xxx.iam.gserviceaccount.com",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nxxxx\n-----END PRIVATE KEY-----\n",
+  "project_id": "your-google-project-id"
+}
