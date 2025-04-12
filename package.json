@@ -3,6 +3,6 @@
   "version": "1.0.0",
   "dependencies": {
     "googleapis": "^105.0.0",
-    "shopify-api-node": "^4.2.2"
+    "shopify-api-node": "^^3.6.13"
   }
 }
