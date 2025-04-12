@@ -1,77 +1,95 @@
 import { google } from 'googleapis';
 import Shopify from 'shopify-api-node';
 
+const shopify = new Shopify({
+  shopName: process.env.SHOPIFY_STORE,
+  accessToken: process.env.SHOPIFY_ADMIN_TOKEN,
+});
+
 export default async function handler(req, res) {
-  // ✅ CORS Headers
-  res.setHeader('Access-Control-Allow-Origin', '*'); // Or replace * with https://songcart.in
-  res.setHeader('Access-Control-Allow-Methods', 'GET');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  const { query } = req.query;
 
-  const query = req.query.query;
-  if (!query) return res.status(400).json({ error: 'Missing query parameter' });
+  if (!query) return res.status(400).json({ error: 'Missing query' });
 
-  // 📌 Google Sheets Setup
   try {
-    const auth = new google.auth.GoogleAuth({
-      credentials: {
-        client_email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
-        private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-      },
-      scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
-    });
+    // 1. Check Google Sheet for early delivery
+    const sheetResponse = await fetchGoogleSheet(query);
 
-    const sheets = google.sheets({ version: 'v4', auth });
-    const sheetId = process.env.SHEET_ID;
-    const sheetName = 'Sheet1';
-
-    const result = await sheets.spreadsheets.values.get({
-      spreadsheetId: sheetId,
-      range: `${sheetName}!A2:E`, // Skip headers
-    });
-
-    const rows = result.data.values;
-    let songRow = null;
-
-    for (const row of rows) {
-      const [timestamp, orderId, email, mp3Link, isReady] = row;
-      if (
-        (orderId && orderId.toLowerCase() === query.toLowerCase()) ||
-        (email && email.toLowerCase() === query.toLowerCase())
-      ) {
-        songRow = { orderId, email, mp3Link, isReady };
-        break;
-      }
-    }
-
-    // 🛍️ Shopify Setup
-    let shopifyOrder = null;
-    try {
-      const shopify = new Shopify({
-        shopName: process.env.SHOPIFY_STORE,
-        accessToken: process.env.SHOPIFY_ADMIN_TOKEN,
+    if (sheetResponse) {
+      return res.status(200).json({
+        isSongReady: sheetResponse.isReady,
+        mp3Link: sheetResponse.link,
       });
-
-      const orders = await shopify.order.list({ name: `#${query}`, limit: 1 });
-      if (orders.length > 0) {
-        shopifyOrder = orders[0];
-      }
-    } catch (shopifyErr) {
-      console.warn('Shopify fetch failed:', shopifyErr.message);
     }
 
-    // 🎯 Final Response
-    if (!songRow) {
-      return res.status(404).json({ error: 'Order not found in Google Sheet' });
-    }
+    // 2. Fallback to Shopify order fetch
+    const order = await getShopifyOrder(query);
 
-    const isSongReady = songRow.isReady?.toLowerCase() === 'yes';
-    return res.status(200).json({
-      isSongReady,
-      mp3Link: songRow.mp3Link,
-      order: shopifyOrder,
-    });
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+
+    return res.status(200).json({ order });
   } catch (err) {
-    console.error('Google Sheet fetch failed:', err.message);
+    console.error('Error:', err.message);
     return res.status(500).json({ error: 'Google Sheet fetch failed' });
+  }
+}
+
+// ✅ Fetch from Google Sheet
+async function fetchGoogleSheet(query) {
+  const auth = new google.auth.GoogleAuth({
+    credentials: {
+      client_email: process.env.GOOGLE_CLIENT_EMAIL,
+      private_key: process.env.GOOGLE_PRIVATE_KEY,
+    },
+    scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+  });
+
+  const sheets = google.sheets({ version: 'v4', auth });
+  const spreadsheetId = process.env.SHEET_ID;
+  const range = 'A2:E1000'; // Adjust range as needed
+
+  const response = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range,
+  });
+
+  const rows = response.data.values;
+
+  if (!rows || rows.length === 0) return null;
+
+  const match = rows.find(
+    (row) => row[1]?.toLowerCase() === query.toString().toLowerCase() || row[2]?.toLowerCase() === query.toString().toLowerCase()
+  );
+
+  if (match) {
+    return {
+      isReady: match[4]?.toLowerCase() === 'yes',
+      link: match[3] || null,
+    };
+  }
+
+  return null;
+}
+
+// ✅ Fetch from Shopify
+async function getShopifyOrder(query) {
+  try {
+    const orders = await shopify.order.list({
+      financial_status: 'paid',
+      status: 'any',
+      fields: 'id,name,email,line_items,created_at,fulfillment_status',
+      limit: 100,
+    });
+
+    const matched = orders.find(
+      (o) =>
+        o.name?.replace('#', '') === query ||
+        o.email?.toLowerCase() === query.toLowerCase()
+    );
+
+    return matched || null;
+  } catch (err) {
+    console.error('Shopify Fetch Error:', err.message);
+    return null;
   }
 }
