@@ -1,5 +1,8 @@
 {
-  "client_email": "xxx@xxx.iam.gserviceaccount.com",
-  "private_key": "-----BEGIN PRIVATE KEY-----\nxxxx\n-----END PRIVATE KEY-----\n",
-  "project_id": "your-google-project-id"
+  "type": "service_account",
+  "project_id": "your-project-id-here",
+  "private_key_id": "some-id",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvAIBADANBgkq...\n-----END PRIVATE KEY-----\n",
+  "client_email": "your-service@project-id.iam.gserviceaccount.com",
+  ...
 }
