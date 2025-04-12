@@ -18,18 +18,24 @@ export default async function handler(req, res) {
       accessToken: process.env.SHOPIFY_ADMIN_TOKEN,
     });
 
-    const orders = await shopify.order.list({ name: `#${query}`, limit: 1 });
+    const nameQuery = query.startsWith("#") ? query : `#${query}`;
+    const orders = await shopify.order.list({ name: nameQuery, limit: 1 });
+
     if (orders.length > 0) {
       shopifyOrder = orders[0];
     } else if (!isNaN(Number(query))) {
-      shopifyOrder = await shopify.order.get(Number(query)).catch(() => null);
+      console.log("Trying fallback: Shopify order.get by ID");
+      shopifyOrder = await shopify.order.get(Number(query));
     }
 
-    if (!shopifyOrder) return res.status(404).json({ error: 'Order not found on Shopify' });
+    if (!shopifyOrder) {
+      return res.status(404).json({ error: 'Order not found on Shopify (name or ID fallback failed)' });
+    }
+
     customerEmail = (shopifyOrder.email || "").trim().toLowerCase();
 
   } catch (err) {
-    return res.status(500).json({ error: 'Error fetching Shopify order' });
+    return res.status(500).json({ error: 'Shopify fetch failed: ' + err.message });
   }
 
   let isSongReady = false;
@@ -53,9 +59,9 @@ export default async function handler(req, res) {
 
     const rows = response.data.values || [];
     for (const row of rows) {
-      const [ , orderId, , link, ready ] = row;
-      if ((orderId?.trim() || "") === query) {
-        isSongReady = (ready?.toLowerCase() === 'yes');
+      const [ , orderId, , link, isReady ] = row;
+      if ((orderId?.trim() || "") === query.trim()) {
+        isSongReady = isReady?.toLowerCase() === "yes";
         mp3Link = link || null;
         break;
       }
@@ -72,6 +78,7 @@ export default async function handler(req, res) {
     emailFromShopify: customerEmail,
     order: {
       name: shopifyOrder.name,
+      id: shopifyOrder.id,
       created_at: shopifyOrder.created_at,
       fulfillment_status: shopifyOrder.fulfillment_status,
       email: customerEmail,
