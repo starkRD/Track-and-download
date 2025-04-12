@@ -1,4 +1,6 @@
 const { google } = require('googleapis');
+const fs = require('fs').promises;
+const path = require('path');
 
 const SHEET_ID = '1QDhwWDIiSTZeGlfFBMLqsxt0avUs9Il1zE7cBR-5VSE';
 const SHEET_NAME = 'Form Responses 1';
@@ -11,15 +13,16 @@ module.exports = async (req, res) => {
   }
 
   try {
-    // Auth using env variables
-    const credentials = {
-      client_email: process.env.GOOGLE_CLIENT_EMAIL,
-      private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-      project_id: process.env.GOOGLE_PROJECT_ID,
-    };
+    const filePath = path.join(process.cwd(), 'songcart-order-tracker.json');
+    const fileContents = await fs.readFile(filePath, 'utf8');
+    const credentials = JSON.parse(fileContents);
 
     const auth = new google.auth.GoogleAuth({
-      credentials,
+      credentials: {
+        client_email: credentials.client_email,
+        private_key: credentials.private_key.replace(/\\n/g, '\n'),
+      },
+      projectId: credentials.project_id,
       scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
     });
 
@@ -31,21 +34,19 @@ module.exports = async (req, res) => {
     });
 
     const rows = response.data.values;
-
-    if (!rows || rows.length === 0) {
-      return res.status(404).json({ error: 'No data found in the sheet.' });
+    if (!rows || rows.length < 2) {
+      return res.status(200).json({ isSongReady: false });
     }
 
     let matchedRow = null;
-
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
-      const orderId = row[0]?.trim();
-      const email = row[1]?.trim();
-      const driveLink = row[2]?.trim();
-      const readyStatus = row[3]?.trim().toLowerCase();
+      const orderId = row[1]?.trim();
+      const email = row[2]?.trim();
+      const driveLink = row[3]?.trim();
+      const readyStatus = row[4]?.trim().toLowerCase();
 
-      if (orderId === query && readyStatus === 'yes') {
+      if ((orderId === query || email === query) && readyStatus === 'yes') {
         matchedRow = {
           orderId,
           email,
@@ -62,8 +63,9 @@ module.exports = async (req, res) => {
 
     return res.json(matchedRow);
   } catch (error) {
-    console.error('API error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error('Google Sheets API Error:', error.message);
+    console.error(error.stack);
+    res.status(500).json({ error: 'Google Sheet fetch failed' });
   }
 };
 
