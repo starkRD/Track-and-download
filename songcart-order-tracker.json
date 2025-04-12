@@ -1,8 +1,6 @@
 {
   "type": "service_account",
-  "project_id": "your-project-id-here",
-  "private_key_id": "some-id",
-  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvAIBADANBgkq...\n-----END PRIVATE KEY-----\n",
-  "client_email": "your-service@project-id.iam.gserviceaccount.com",
-  ...
+  "note": "This file is not used in production. Real credentials are securely stored in Vercel environment variables.",
+  "project_id": "songcart-order-tracker",
+  "client_email": "songcart-tracker@songcart-order-tracker.iam.gserviceaccount.com"
 }
