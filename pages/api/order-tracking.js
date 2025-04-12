@@ -1,11 +1,11 @@
-import { google } from 'googleapis';
-import { promises as fs } from 'fs';
-import path from 'path';
+const { google } = require('googleapis');
+const fs = require('fs').promises;
+const path = require('path');
 
 const SHEET_ID = '1QDhwWDIiSTZeGlfFBMLqsxt0avUs9Il1zE7cBR-5VSE';
 const SHEET_NAME = 'Form Responses 1';
 
-export default async function handler(req, res) {
+module.exports = async (req, res) => {
   const { query } = req.query;
 
   if (!query) {
@@ -14,7 +14,8 @@ export default async function handler(req, res) {
 
   try {
     const filePath = path.join(process.cwd(), 'songcart-order-tracker.json');
-    const credentials = JSON.parse(await fs.readFile(filePath, 'utf8'));
+    const fileContents = await fs.readFile(filePath, 'utf8');
+    const credentials = JSON.parse(fileContents);
 
     const auth = new google.auth.GoogleAuth({
       credentials,
@@ -58,7 +59,7 @@ export default async function handler(req, res) {
     console.error('API error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
-}
+};
 
 function convertToDirectDownloadLink(shareLink) {
   const match = shareLink.match(/\/d\/(.*?)\//);
