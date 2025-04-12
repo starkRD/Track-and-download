@@ -1,76 +1,95 @@
-const { google } = require('googleapis');
-const fs = require('fs').promises;
-const path = require('path');
+import { google } from 'googleapis';
+import Shopify from 'shopify-api-node';
 
-const SHEET_ID = '1QDhwWDIiSTZeGlfFBMLqsxt0avUs9Il1zE7cBR-5VSE';
-const SHEET_NAME = 'Form Responses 1';
+const shopify = new Shopify({
+  shopName: process.env.SHOPIFY_STORE,
+  accessToken: process.env.SHOPIFY_ADMIN_TOKEN,
+});
 
-module.exports = async (req, res) => {
+export default async function handler(req, res) {
   const { query } = req.query;
 
-  if (!query) {
-    return res.status(400).json({ error: 'Missing order ID or email.' });
-  }
+  if (!query) return res.status(400).json({ error: 'Missing query' });
 
   try {
-    const filePath = path.join(process.cwd(), 'songcart-order-tracker.json');
-    const fileContents = await fs.readFile(filePath, 'utf8');
-    const credentials = JSON.parse(fileContents);
+    // 1. Check Google Sheet for early delivery
+    const sheetResponse = await fetchGoogleSheet(query);
 
-    const auth = new google.auth.GoogleAuth({
-      credentials,
-      scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+    if (sheetResponse) {
+      return res.status(200).json({
+        isSongReady: sheetResponse.isReady,
+        mp3Link: sheetResponse.link,
+      });
+    }
+
+    // 2. Fallback to Shopify order fetch
+    const order = await getShopifyOrder(query);
+
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+
+    return res.status(200).json({ order });
+  } catch (err) {
+    console.error('Error:', err.message);
+    return res.status(500).json({ error: 'Google Sheet fetch failed' });
+  }
+}
+
+// ✅ Fetch from Google Sheet
+async function fetchGoogleSheet(query) {
+  const auth = new google.auth.GoogleAuth({
+    credentials: {
+      client_email: process.env.GOOGLE_CLIENT_EMAIL,
+      private_key: process.env.GOOGLE_PRIVATE_KEY,
+    },
+    scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+  });
+
+  const sheets = google.sheets({ version: 'v4', auth });
+  const spreadsheetId = process.env.SHEET_ID;
+  const range = 'A2:E1000'; // Adjust range as needed
+
+  const response = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range,
+  });
+
+  const rows = response.data.values;
+
+  if (!rows || rows.length === 0) return null;
+
+  const match = rows.find(
+    (row) => row[1]?.toLowerCase() === query.toString().toLowerCase() || row[2]?.toLowerCase() === query.toString().toLowerCase()
+  );
+
+  if (match) {
+    return {
+      isReady: match[4]?.toLowerCase() === 'yes',
+      link: match[3] || null,
+    };
+  }
+
+  return null;
+}
+
+// ✅ Fetch from Shopify
+async function getShopifyOrder(query) {
+  try {
+    const orders = await shopify.order.list({
+      financial_status: 'paid',
+      status: 'any',
+      fields: 'id,name,email,line_items,created_at,fulfillment_status',
+      limit: 100,
     });
 
-    const sheets = google.sheets({ version: 'v4', auth });
+    const matched = orders.find(
+      (o) =>
+        o.name?.replace('#', '') === query ||
+        o.email?.toLowerCase() === query.toLowerCase()
+    );
 
-    const response = await sheets.spreadsheets.values.get({
-      spreadsheetId: SHEET_ID,
-      range: SHEET_NAME,
-    });
-
-    const rows = response.data.values;
-
-    if (!rows || rows.length < 2) {
-      return res.status(404).json({ error: 'No data found in the sheet.' });
-    }
-
-    let matchedRow = null;
-
-    for (let i = 1; i < rows.length; i++) {
-      const row = rows[i];
-      const orderId = (row[1] || '').trim();
-      const email = (row[2] || '').trim();
-      const driveLink = (row[3] || '').trim();
-      const readyStatus = (row[4] || '').trim().toLowerCase();
-
-      if ((orderId === query || email === query) && readyStatus === 'yes') {
-        matchedRow = {
-          orderId,
-          email,
-          isSongReady: true,
-          songUrl: convertToDirectDownloadLink(driveLink),
-        };
-        break;
-      }
-    }
-
-    if (!matchedRow) {
-      return res.json({ isSongReady: false });
-    }
-
-    return res.json(matchedRow);
-  } catch (error) {
-    console.error('Google Sheet fetch failed:', error);
-    res.status(500).json({ error: 'Google Sheet fetch failed' });
+    return matched || null;
+  } catch (err) {
+    console.error('Shopify Fetch Error:', err.message);
+    return null;
   }
-};
-
-function convertToDirectDownloadLink(shareLink) {
-  if (!shareLink) return '';
-  const match = shareLink.match(/\/d\/(.*?)\//);
-  if (match && match[1]) {
-    return `https://drive.google.com/uc?export=download&id=${match[1]}`;
-  }
-  return shareLink;
 }
