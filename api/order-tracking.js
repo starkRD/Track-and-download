@@ -1,6 +1,4 @@
 const { google } = require('googleapis');
-const fs = require('fs').promises;
-const path = require('path');
 
 const SHEET_ID = '1QDhwWDIiSTZeGlfFBMLqsxt0avUs9Il1zE7cBR-5VSE';
 const SHEET_NAME = 'Form Responses 1';
@@ -13,9 +11,12 @@ module.exports = async (req, res) => {
   }
 
   try {
-    const filePath = path.join(process.cwd(), 'songcart-order-tracker.json');
-    const fileContents = await fs.readFile(filePath, 'utf8');
-    const credentials = JSON.parse(fileContents);
+    // Auth using env variables
+    const credentials = {
+      client_email: process.env.GOOGLE_CLIENT_EMAIL,
+      private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+      project_id: process.env.GOOGLE_PROJECT_ID,
+    };
 
     const auth = new google.auth.GoogleAuth({
       credentials,
@@ -31,7 +32,12 @@ module.exports = async (req, res) => {
 
     const rows = response.data.values;
 
+    if (!rows || rows.length === 0) {
+      return res.status(404).json({ error: 'No data found in the sheet.' });
+    }
+
     let matchedRow = null;
+
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
       const orderId = row[0]?.trim();
