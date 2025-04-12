@@ -1,7 +1,8 @@
 {
-  "name": "songcart-tracking-backend",
+  "name": "track-and-download",
   "version": "1.0.0",
   "dependencies": {
-    "googleapis": "^125.0.0"
+    "googleapis": "^105.0.0",
+    "shopify-api-node": "^4.2.2"
   }
 }
