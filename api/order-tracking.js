@@ -17,18 +17,29 @@ export default async function handler(req, res) {
     });
 
     const orders = await shopify.order.list({ name: `#${query}`, limit: 1 });
-    if (orders.length === 0) return res.status(404).json({ error: 'Order not found on Shopify' });
-    shopifyOrder = orders[0];
+    if (orders.length === 0) {
+      // fallback to ID match
+      const fallback = await shopify.order.get(Number(query)).catch(() => null);
+      if (!fallback) return res.status(404).json({ error: 'Order not found on Shopify' });
+      shopifyOrder = fallback;
+    } else {
+      shopifyOrder = orders[0];
+    }
   } catch (e) {
     return res.status(500).json({ error: 'Shopify fetch failed' });
   }
 
+  // Get email and fulfillment info from Shopify
+  const customerEmail = shopifyOrder?.email?.toLowerCase() || "";
+  const isFulfilled = shopifyOrder.fulfillment_status === "fulfilled";
+
+  // Lookup song in Google Sheet
   let songRow = null;
   try {
     const auth = new google.auth.GoogleAuth({
       credentials: {
         client_email: process.env.GOOGLE_CLIENT_EMAIL,
-        private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+        private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\\n'),
       },
       scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
     });
@@ -42,12 +53,11 @@ export default async function handler(req, res) {
 
     const rows = response.data.values || [];
     for (const row of rows) {
-      const [timestamp, orderId, customerEmail, mp3Link, isReady] = row;
-      if (orderId === query) {
+      const [timestamp, orderId, email, mp3Link, isReady] = row;
+      if ((orderId?.trim() || "") === query) {
         songRow = {
-          email: customerEmail?.trim().toLowerCase(),
-          mp3Link,
-          isReady: isReady?.toLowerCase() === 'yes',
+          isSongReady: isReady?.toLowerCase() === "yes",
+          mp3Link: mp3Link || null
         };
         break;
       }
@@ -57,9 +67,16 @@ export default async function handler(req, res) {
   }
 
   return res.status(200).json({
-    order: shopifyOrder,
-    isSongReady: songRow?.isReady || false,
+    isFulfilled,
+    isSongReady: songRow?.isSongReady || false,
     mp3Link: songRow?.mp3Link || null,
-    emailFromShopify: shopifyOrder?.email?.toLowerCase() || null,
+    emailFromShopify: customerEmail,
+    order: {
+      name: shopifyOrder.name,
+      created_at: shopifyOrder.created_at,
+      fulfillment_status: shopifyOrder.fulfillment_status,
+      email: customerEmail,
+      line_items: shopifyOrder.line_items.map(i => ({ variant_id: i.variant_id })),
+    }
   });
 }
