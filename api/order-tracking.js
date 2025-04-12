@@ -7,9 +7,11 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   const query = req.query.query;
-  if (!query) return res.status(400).json({ error: 'Missing query parameter' });
+  if (!query) return res.status(400).json({ error: 'Missing order ID or email.' });
 
   let shopifyOrder = null;
+  let customerEmail = "";
+
   try {
     const shopify = new Shopify({
       shopName: process.env.SHOPIFY_STORE,
@@ -17,24 +19,22 @@ export default async function handler(req, res) {
     });
 
     const orders = await shopify.order.list({ name: `#${query}`, limit: 1 });
-    if (orders.length === 0) {
-      // fallback to ID match
-      const fallback = await shopify.order.get(Number(query)).catch(() => null);
-      if (!fallback) return res.status(404).json({ error: 'Order not found on Shopify' });
-      shopifyOrder = fallback;
-    } else {
+    if (orders.length > 0) {
       shopifyOrder = orders[0];
+    } else if (!isNaN(Number(query))) {
+      shopifyOrder = await shopify.order.get(Number(query)).catch(() => null);
     }
-  } catch (e) {
-    return res.status(500).json({ error: 'Shopify fetch failed' });
+
+    if (!shopifyOrder) return res.status(404).json({ error: 'Order not found on Shopify' });
+    customerEmail = (shopifyOrder.email || "").trim().toLowerCase();
+
+  } catch (err) {
+    return res.status(500).json({ error: 'Error fetching Shopify order' });
   }
 
-  // Get email and fulfillment info from Shopify
-  const customerEmail = shopifyOrder?.email?.toLowerCase() || "";
-  const isFulfilled = shopifyOrder.fulfillment_status === "fulfilled";
+  let isSongReady = false;
+  let mp3Link = null;
 
-  // Lookup song in Google Sheet
-  let songRow = null;
   try {
     const auth = new google.auth.GoogleAuth({
       credentials: {
@@ -53,23 +53,22 @@ export default async function handler(req, res) {
 
     const rows = response.data.values || [];
     for (const row of rows) {
-      const [timestamp, orderId, email, mp3Link, isReady] = row;
+      const [ , orderId, , link, ready ] = row;
       if ((orderId?.trim() || "") === query) {
-        songRow = {
-          isSongReady: isReady?.toLowerCase() === "yes",
-          mp3Link: mp3Link || null
-        };
+        isSongReady = (ready?.toLowerCase() === 'yes');
+        mp3Link = link || null;
         break;
       }
     }
+
   } catch (err) {
     console.warn("Google Sheet fetch failed:", err.message);
   }
 
   return res.status(200).json({
-    isFulfilled,
-    isSongReady: songRow?.isSongReady || false,
-    mp3Link: songRow?.mp3Link || null,
+    isFulfilled: shopifyOrder.fulfillment_status === "fulfilled",
+    isSongReady,
+    mp3Link,
     emailFromShopify: customerEmail,
     order: {
       name: shopifyOrder.name,
