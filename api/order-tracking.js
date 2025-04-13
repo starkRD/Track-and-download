@@ -1,98 +1,88 @@
-const express = require('express');
-const router = express.Router();
+import { google } from 'googleapis';
+import Shopify from 'shopify-api-node';
 
-// Utility: Compare emails (case-insensitive)
-function isValidEmail(provided, actual) {
-  return provided && actual &&
-         provided.trim().toLowerCase() === actual.trim().toLowerCase();
-}
+export default async function handler(req, res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-// Utility: Calculate delivery deadline (in hours) based on variant
-function calculateDeadline(variantId, createdAt) {
-  const deliveryHours = {
-    premium: 30,
-    beast: 24,
-    standard: 48,
-    basic: 120,
-  };
-  const hours = deliveryHours[variantId.toLowerCase()] || 48;
-  const deadline = new Date(createdAt);
-  deadline.setHours(deadline.getHours() + hours);
-  return deadline;
-}
+  const query = req.query.query;
+  if (!query) return res.status(400).json({ error: 'Missing order ID or email.' });
 
-// Stub: Fetch order details from Shopify using orderId
-async function fetchShopifyOrder(orderId) {
-  // In a real implementation, replace with an API call to Shopify Admin.
-  return {
-    id: orderId,
-    name: `Order ${orderId}`,
-    created_at: new Date().toISOString(),
-    fulfillment_status: 'fulfilled', // or null if processing
-    variant_id: 'premium',
-    customer: { email: 'customer@example.com' }
-  };
-}
+  let shopifyOrder = null;
+  let customerEmail = "";
 
-// Stub: Retrieve song data from Google Sheets using orderId
-async function getSongData(orderId) {
-  // Replace with Google Sheets API call
-  if (orderId === 'song-ready') {
-    return { mp3Link: 'https://example.com/song.mp3' };
-  }
-  return null;
-}
-
-router.post('/api/order-tracking', async (req, res) => {
   try {
-    const { orderId, email: providedEmail } = req.body;
-
-    // Fetch order details from Shopify
-    const order = await fetchShopifyOrder(orderId);
-    if (!order) {
-      return res.status(404).json({ error: 'Order not found.' });
-    }
-
-    // Validate email, if provided
-    if (providedEmail && !isValidEmail(providedEmail, order.customer.email)) {
-      return res.status(401).json({ error: 'Email verification failed.' });
-    }
-
-    // Calculate deadline
-    const deadline = calculateDeadline(order.variant_id, order.created_at);
-    const now = new Date();
-
-    // Check song readiness
-    const songData = await getSongData(order.id);
-    const isSongReady = Boolean(songData);
-    const mp3Link = songData ? songData.mp3Link : null;
-
-    // Decide response message
-    let message = '';
-    if (!order.fulfillment_status) {
-      message = `Processing – expected by ${deadline.toLocaleString()}`;
-    } else if (order.fulfillment_status === 'fulfilled' && !isSongReady) {
-      message = 'Delivered';
-    } else if (isSongReady && now > deadline) {
-      message = providedEmail ? 'Song ready for download.' : 'Please verify your email to download your song.';
-    } else if (isSongReady && now <= deadline) {
-      message = 'Song available for early access at ₹499.';
-    } else {
-      message = 'Status updating...';
-    }
-
-    // Return response
-    res.json({
-      order,
-      isSongReady,
-      mp3Link,
-      message,
-      deadline
+    const shopify = new Shopify({
+      shopName: process.env.SHOPIFY_STORE,
+      accessToken: process.env.SHOPIFY_ADMIN_TOKEN,
     });
-  } catch (error) {
-    console.error('Error in order-tracking:', error);
-    res.status(500).json({ error: 'Internal server error.' });
-  }
-});
 
-module.exports = router;
+    const nameQuery = query.startsWith("#") ? query : `#${query}`;
+    const orders = await shopify.order.list({ name: nameQuery, limit: 1 });
+
+    if (orders.length > 0) {
+      shopifyOrder = orders[0];
+    } else if (!isNaN(Number(query))) {
+      console.log("Trying fallback: Shopify order.get by ID");
+      shopifyOrder = await shopify.order.get(Number(query));
+    }
+
+    if (!shopifyOrder) {
+      return res.status(404).json({ error: 'Order not found on Shopify (name or ID fallback failed)' });
+    }
+
+    customerEmail = (shopifyOrder.email || "").trim().toLowerCase();
+
+  } catch (err) {
+    return res.status(500).json({ error: 'Shopify fetch failed: ' + err.message });
+  }
+
+  let isSongReady = false;
+  let mp3Link = null;
+
+  try {
+    const auth = new google.auth.GoogleAuth({
+      credentials: {
+        client_email: process.env.GOOGLE_CLIENT_EMAIL,
+        private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\\n'),
+      },
+      scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+    });
+
+    const sheets = google.sheets({ version: 'v4', auth });
+    const sheetId = process.env.SHEET_ID;
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId: sheetId,
+      range: 'Sheet1!A2:E',
+    });
+
+    const rows = response.data.values || [];
+    for (const row of rows) {
+      const [ , orderId, , link, isReady ] = row;
+      if ((orderId?.trim() || "") === query.trim()) {
+        isSongReady = isReady?.toLowerCase() === "yes";
+        mp3Link = link || null;
+        break;
+      }
+    }
+
+  } catch (err) {
+    console.warn("Google Sheet fetch failed:", err.message);
+  }
+
+  return res.status(200).json({
+    isFulfilled: shopifyOrder.fulfillment_status === "fulfilled",
+    isSongReady,
+    mp3Link,
+    emailFromShopify: customerEmail,
+    order: {
+      name: shopifyOrder.name,
+      id: shopifyOrder.id,
+      created_at: shopifyOrder.created_at,
+      fulfillment_status: shopifyOrder.fulfillment_status,
+      email: customerEmail,
+      line_items: shopifyOrder.line_items.map(i => ({ variant_id: i.variant_id })),
+    }
+  });
+}
