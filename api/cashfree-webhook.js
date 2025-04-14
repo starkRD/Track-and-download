@@ -6,10 +6,10 @@ export default async function handler(req, res) {
   }
   
   try {
-    // Parse and process the webhook payload
+    // Parse and process the webhook payload (assumes JSON payload with correct Content-Type)
     const payload = req.body;
     
-    // Implement your signature verification logic (dummy placeholder here)
+    // Verify the webhook signature (this is a dummy placeholder - replace with actual logic)
     if (!verifyCashfreeSignature(req.headers, payload)) {
       return res.status(401).send('Unauthorized: Invalid signature');
     }
@@ -17,9 +17,8 @@ export default async function handler(req, res) {
     const orderId = payload.orderId;
     const transactionStatus = payload.txStatus;
     
-    // For a successful payment, update the persistent record for early access
+    // For a successful payment, update your persistent record for early access payment
     if (transactionStatus === 'SUCCESS') {
-      // Your function to update the early access payment record (Google Sheets, DB, etc.)
       await updateEarlyAccessRecord(orderId, {
         paid: true,
         transactionId: payload.referenceId,
@@ -36,13 +35,16 @@ export default async function handler(req, res) {
 }
 
 // Dummy signature verification function.
+// Replace this with your actual verification logic as per Cashfree's guidelines.
 function verifyCashfreeSignature(headers, payload) {
-  // TODO: Implement verification based on Cashfree guidelines.
+  // Example: You may need to use a shared secret or use a hashing algorithm
+  // to compare the signature provided in the headers against your calculated signature.
   return true;
 }
 
 // Dummy update function.
+// Replace this with your logic to update your persistent store (e.g., Google Sheet, database, or Shopify metafield).
 async function updateEarlyAccessRecord(orderId, paymentData) {
-  // TODO: Write code to update your persistent record (e.g., Google Sheet, database).
   console.log(`Updating record for order ${orderId}`, paymentData);
+  // TODO: Write code here to update your persistent record.
 }
