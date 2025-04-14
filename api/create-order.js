@@ -1,9 +1,9 @@
 // pages/api/create-order.js
 
-import fetch from 'node-fetch'; // If you're on Node 18+, native fetch is available
+import fetch from 'node-fetch'; // If you're on Node 18+, you could use the built‐in fetch instead.
 
 export default async function handler(req, res) {
-  // Handle OPTIONS preflight CORS request
+  // Handle preflight (OPTIONS) for CORS
   if (req.method === 'OPTIONS') {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
@@ -16,6 +16,7 @@ export default async function handler(req, res) {
   }
   
   const { orderId, amount, customerName, customerEmail, customerPhone } = req.body;
+  
   if (!orderId || !amount || !customerName || !customerEmail || !customerPhone) {
     return res.status(400).json({ error: 'Missing required payment fields.' });
   }
@@ -29,8 +30,7 @@ export default async function handler(req, res) {
     const numericAmount = parseFloat(amount);
     const customerId = generateCustomerId();
 
-    // Build payload per Cashfree’s new token-based hosted checkout integration.
-    // (Field names are in camelCase as indicated by the docs.)
+    // Build the payload with camelCase field names.
     const payload = {
       orderId: orderId,
       orderAmount: numericAmount,
@@ -41,7 +41,7 @@ export default async function handler(req, res) {
         customerEmail,
         customerPhone,
       },
-      // Optional meta data (if you wish to set return and notify URLs)
+      // Optional: include orderMeta if you want to pass returnUrl/notifyUrl.
       orderMeta: {
         returnUrl: process.env.CASHFREE_RETURN_URL || '',
         notifyUrl: process.env.CASHFREE_NOTIFY_URL || '',
@@ -50,13 +50,15 @@ export default async function handler(req, res) {
 
     console.log("Payload sent to Cashfree:", payload);
 
-    // Use Cashfree's new API endpoint for order creation.
+    // Call Cashfree's order creation endpoint (production)
     const response = await fetch('https://api.cashfree.com/pg/orders', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-client-id': process.env.CASHFREE_CLIENT_ID,
         'x-client-secret': process.env.CASHFREE_CLIENT_SECRET,
+        // NEW: Set the API version header as required.
+        'x-api-version': '2025-01-01'
       },
       body: JSON.stringify(payload)
     });
@@ -69,7 +71,7 @@ export default async function handler(req, res) {
       return res.status(response.status).json({ error: data.message || 'Cashfree order creation failed.' });
     }
 
-    // Expect the response to contain "payment_session_id"
+    // Return the response, which should now include payment_session_id (or similar)
     return res.status(200).json(data);
   } catch (error) {
     console.error('Error creating Cashfree order:', error);
@@ -78,5 +80,6 @@ export default async function handler(req, res) {
 }
 
 function generateCustomerId() {
+  // Generate a unique customer ID using the current timestamp and a random number.
   return "cust_" + Date.now() + "_" + Math.floor(Math.random() * 1000);
 }
