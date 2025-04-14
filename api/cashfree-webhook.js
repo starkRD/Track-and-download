@@ -15,46 +15,42 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Read the raw request body as a string.
+    // Read the raw request body
     const rawBody = await getRawBody(req, {
       length: req.headers['content-length'],
       encoding: 'utf-8',
     });
     
-    // For debugging, log the raw body (remove or disable in production)
     console.log('Raw body:', rawBody);
     
-    // Compute the signature using the raw payload
+    // Compute local signature from raw body
     const computedSignature = computeSignature(rawBody);
-    
-    // Retrieve the signature sent by Cashfree from the correct header.
-    // Based on your logs, Cashfree sends it as 'x-webhook-signature'
+
+    // Cashfree’s Payment Link or Payment Gateway webhooks often include 'x-webhook-signature'
     const receivedSignature = req.headers['x-webhook-signature'];
-    
     console.log('Received Signature:', receivedSignature);
     console.log('Computed Signature:', computedSignature);
-    
-    // If signatures do not match, reject the request.
+
     if (computedSignature !== receivedSignature) {
       return res.status(401).send('Unauthorized: Invalid signature');
     }
     
-    // Parse the raw body as JSON (since we need to process the webhook data)
+    // Parse JSON
     const payload = JSON.parse(rawBody);
-    
-    // Process the Payment Links webhook payload.
+
+    // Example: For Payment Gateway or Payment Link events, the structure might vary
     const transactionStatus = payload.data?.order?.transaction_status;
     const orderId = payload.data?.order?.order_id;
-    
+
     if (transactionStatus === 'SUCCESS') {
-      // Update your persistent record (replace dummy function with real logic)
+      // Mark early access as paid, e.g., in a DB, Google Sheet, or Shopify metafield
       await updateEarlyAccessRecord(orderId, {
         paid: true,
         transactionId: payload.data.order.transaction_id,
         timestamp: new Date().toISOString(),
       });
     }
-    
+
     res.status(200).send('Webhook processed successfully');
   } catch (error) {
     console.error("Error processing Cashfree webhook:", error);
@@ -62,27 +58,15 @@ export default async function handler(req, res) {
   }
 }
 
-/**
- * Compute the HMAC SHA256 signature over the raw payload and encode it in base64.
- * @param {string} rawBody - The raw JSON string received from Cashfree.
- * @returns {string} - The computed signature.
- */
 function computeSignature(rawBody) {
-  // Get your secret key from environment variables.
-  const secret = process.env.CASHFREE_SECRET;
-  
-  // Create HMAC using SHA256, update with the raw payload,
-  // and then base64 encode the resulting digest.
+  const secret = process.env.CASHFREE_SECRET; // Ensure this is the correct secret
   const hmac = crypto.createHmac('sha256', secret);
   hmac.update(rawBody);
   return hmac.digest('base64');
 }
 
-/**
- * Dummy function to update the early access record.
- * Replace this with your actual logic (e.g., update Google Sheets, database, or Shopify metafield).
- */
+// Replace with real logic for updating your records
 async function updateEarlyAccessRecord(orderId, paymentData) {
   console.log(`Updating record for order ${orderId}:`, paymentData);
-  // TODO: Implement your update logic.
+  // TODO: Implement logic here, e.g., update a Google Sheet or Shopify metafield
 }
