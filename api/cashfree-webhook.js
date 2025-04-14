@@ -6,7 +6,7 @@ import { google } from 'googleapis';
 
 export const config = {
   api: {
-    bodyParser: false,
+    bodyParser: false, // Disable automatic parsing so we get the raw body
   },
 };
 
@@ -34,10 +34,10 @@ export default async function handler(req, res) {
     
     const payload = JSON.parse(rawBody);
     const transactionStatus = payload.data?.order?.transaction_status;
-    const compositeOrderId = payload.data?.order?.order_id; // This is the composite id from Cashfree
+    const compositeOrderId = payload.data?.order?.order_id; // e.g. "4152_1682249062134_42"
     
     if (transactionStatus === 'SUCCESS') {
-      // Extract the base order id. Assume it's the part before the first underscore.
+      // Extract the base order id from the composite order id.
       const baseOrderId = compositeOrderId ? compositeOrderId.split('_')[0] : null;
       if (baseOrderId) {
         await updateEarlyAccessRecord(baseOrderId, {
@@ -46,7 +46,7 @@ export default async function handler(req, res) {
           timestamp: new Date().toISOString()
         });
       } else {
-        console.error("Could not extract base order id from composite: ", compositeOrderId);
+        console.error("Failed to extract base order id from:", compositeOrderId);
       }
     }
     
@@ -79,7 +79,7 @@ async function updateEarlyAccessRecord(baseOrderId, paymentData) {
   const sheetId = process.env.SHEET_ID;
 
   try {
-    // Get the entire column B (assuming order IDs are in column B, starting from row 2)
+    // Get orders from column B (starting from row 2)
     const result = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetId,
       range: 'Sheet1!B2:B',
@@ -91,13 +91,11 @@ async function updateEarlyAccessRecord(baseOrderId, paymentData) {
       return;
     }
 
-    // Find the row that has a matching order id. Since we're storing the base order id,
-    // compare with baseOrderId.
     let rowNumber = null;
     for (let i = 0; i < rows.length; i++) {
       const sheetOrderId = rows[i][0] ? rows[i][0].trim() : "";
       if (sheetOrderId === baseOrderId.trim()) {
-        rowNumber = i + 2; // because range starts at row 2
+        rowNumber = i + 2; // Adjust for header row
         break;
       }
     }
@@ -107,14 +105,15 @@ async function updateEarlyAccessRecord(baseOrderId, paymentData) {
       return;
     }
 
-    const updateRange = `Sheet1!F${rowNumber}`; // Assuming column F is used for early access status
+    // Update column F (assuming early access paid flag is stored in column F)
+    const updateRange = `Sheet1!F${rowNumber}`;
     const updateResult = await sheets.spreadsheets.values.update({
       spreadsheetId: sheetId,
       range: updateRange,
       valueInputOption: 'RAW',
-      requestBody: { values: [["yes"]] },
+      requestBody: { values: [["yes"]] }
     });
-    console.log(`Updated sheet row ${rowNumber} for base order ${baseOrderId}:`, updateResult.data);
+    console.log(`Updated row ${rowNumber} for base order ${baseOrderId}:`, updateResult.data);
   } catch (err) {
     console.error("Error updating the Google Sheet:", err);
   }
