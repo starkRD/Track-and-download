@@ -1,9 +1,9 @@
 // pages/api/create-order.js
 
-import fetch from 'node-fetch'; // For Node versions before 18
+import fetch from 'node-fetch';
 
 export default async function handler(req, res) {
-  // Handle preflight (OPTIONS)
+  // Handle preflight (OPTIONS) request
   if (req.method === 'OPTIONS') {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
@@ -17,7 +17,6 @@ export default async function handler(req, res) {
   
   const { orderId, amount, customerName, customerEmail, customerPhone } = req.body;
   
-  // Validate required fields
   if (!orderId || !amount || !customerName || !customerEmail || !customerPhone) {
     return res.status(400).json({ error: 'Missing required payment fields.' });
   }
@@ -28,18 +27,18 @@ export default async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-    // Sanitize base order id: remove any leading "#" and invalid characters.
+    // Sanitize the base order ID by removing a leading '#' and any invalid characters.
     let baseOrderId = orderId.replace(/^#/, '').replace(/[^A-Za-z0-9_-]/g, '');
-    // Append a unique suffix (timestamp and random number)
+    // Append a unique suffix (timestamp and random number) for each payment attempt.
     const suffix = "_" + Date.now() + "_" + Math.floor(Math.random() * 1000);
     const uniqueOrderId = baseOrderId + suffix;
 
     const numericAmount = parseFloat(amount);
-    const customerId = generateCustomerId(); // This can be generated or retrieved if available.
+    const customerId = generateCustomerId();
 
-    // Build the payload using snake_case as required.
+    // Build payload using snake_case fields
     const payload = {
-      order_id: uniqueOrderId,          // unique composite order id.
+      order_id: uniqueOrderId,          // composite order id for Cashfree
       order_amount: numericAmount,
       order_currency: 'INR',
       customer_details: {
@@ -48,7 +47,6 @@ export default async function handler(req, res) {
         customer_email: customerEmail,
         customer_phone: customerPhone
       },
-      // Optional meta: you can include return_url or notify_url
       order_meta: {
         return_url: process.env.CASHFREE_RETURN_URL || null,
         notify_url: process.env.CASHFREE_NOTIFY_URL || null,
@@ -76,7 +74,7 @@ export default async function handler(req, res) {
       return res.status(response.status).json({ error: data.message || 'Cashfree order creation failed.' });
     }
 
-    // Return the successful response (must include payment_session_id).
+    // Expecting a payment_session_id (or similar) in the response.
     return res.status(200).json(data);
   } catch (error) {
     console.error('Error creating Cashfree order:', error);
