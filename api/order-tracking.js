@@ -1,4 +1,5 @@
 // pages/api/order-tracking.js
+
 import { google } from 'googleapis';
 import Shopify from 'shopify-api-node';
 
@@ -60,6 +61,7 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'We encountered an issue connecting to our order system. Please try again later.' });
   }
 
+  // Update the range to read up through column F (where early access flag is stored)
   let isSongReady = false;
   let mp3Link = null;
   const orderName = shopifyOrder.name.replace('#', '');
@@ -74,19 +76,20 @@ export default async function handler(req, res) {
     });
     
     const sheets = google.sheets({ version: 'v4', auth });
+    // Update the range to include column F
     const sheetId = process.env.SHEET_ID;
-    
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetId,
-      range: 'Sheet1!A2:E',
+      range: 'Sheet1!A2:F', // Now reading columns A to F
     });
     
     const rows = response.data.values || [];
     for (const row of rows) {
-      if (row.length >= 5) {
-        const orderId = (row[1] || "").trim();
-        if (orderId === orderName || orderId === query.trim()) {
-          isSongReady = (row[4] || "").toLowerCase() === "yes";
+      if (row.length >= 6) { // Now 6 columns: Column F is index 5
+        const sheetOrderId = (row[1] || "").trim();
+        if (sheetOrderId === orderName || sheetOrderId === query.trim()) {
+          // Column F (index 5) contains the early access flag; check if it equals "yes"
+          isSongReady = (row[5] || "").toLowerCase() === "yes";
           mp3Link = row[3] || null;
           break;
         }
