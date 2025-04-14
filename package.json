@@ -4,6 +4,7 @@
   "dependencies": {
     "googleapis": "^105.0.0",
     "shopify-api-node": "^3.6.13",
-    "raw-body": "^2.5.1"
+    "raw-body": "^2.5.1",
+    "node-fetch": "^2.6.7" 
   }
 }
