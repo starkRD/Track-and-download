@@ -1,3 +1,5 @@
+// pages/api/order-tracking.js
+
 import { google } from 'googleapis';
 import Shopify from 'shopify-api-node';
 
@@ -7,7 +9,6 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Methods', 'GET');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  // Handle preflight requests
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
@@ -20,21 +21,18 @@ export default async function handler(req, res) {
   let shopifyOrder = null;
   let customerEmail = "";
   
-  // Try to get order from Shopify
   try {
     const shopify = new Shopify({
       shopName: process.env.SHOPIFY_STORE,
       accessToken: process.env.SHOPIFY_ADMIN_TOKEN,
     });
 
-    // First try: Search by name (with or without # prefix)
     const nameQuery = query.startsWith("#") ? query : `#${query}`;
     const orders = await shopify.order.list({ name: nameQuery, limit: 1 });
     
     if (orders.length > 0) {
       shopifyOrder = orders[0];
     } else if (!isNaN(Number(query))) {
-      // Second try: Get by ID if the query is a number
       try {
         shopifyOrder = await shopify.order.get(Number(query));
       } catch (idError) {
@@ -42,7 +40,6 @@ export default async function handler(req, res) {
       }
     }
     
-    // Third try: If query might be an email, search by email
     if (!shopifyOrder && query.includes('@')) {
       try {
         const emailOrders = await shopify.order.list({ email: query.toLowerCase(), limit: 1 });
@@ -65,7 +62,6 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'We encountered an issue connecting to our order system. Please try again later.' });
   }
 
-  // Check song status in Google Sheets
   let isSongReady = false;
   let mp3Link = null;
   const orderName = shopifyOrder.name.replace('#', '');
@@ -88,13 +84,9 @@ export default async function handler(req, res) {
     });
     
     const rows = response.data.values || [];
-    
     for (const row of rows) {
-      // Check if row has enough elements and orderId matches
       if (row.length >= 5) {
         const orderId = (row[1] || "").trim();
-        
-        // Match by order name or order number
         if (orderId === orderName || orderId === query.trim()) {
           isSongReady = (row[4] || "").toLowerCase() === "yes";
           mp3Link = row[3] || null;
@@ -104,7 +96,6 @@ export default async function handler(req, res) {
     }
   } catch (err) {
     console.error("Google Sheets error:", err);
-    // Don't fail the request if sheets access fails - just log and continue
   }
 
   return res.status(200).json({
