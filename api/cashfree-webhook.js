@@ -1,6 +1,13 @@
 // pages/api/cashfree-webhook.js
 
 import crypto from 'crypto';
+import getRawBody from 'raw-body';
+
+export const config = {
+  api: {
+    bodyParser: false, // Disable Next.js automatic body parsing
+  },
+};
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -8,27 +15,48 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Assume the body is JSON and Next.js has parsed it.
-    const payload = req.body;
-
-    // Verify the webhook signature using our custom function.
-    if (!verifyCashfreeSignature(req.headers, payload)) {
+    // Read the raw request body as a string.
+    const rawBody = await getRawBody(req, {
+      length: req.headers['content-length'],
+      encoding: 'utf-8',
+    });
+    
+    // For debugging, log the raw body (remove or disable in production)
+    console.log('Raw body:', rawBody);
+    
+    // Compute the signature using the raw payload
+    const computedSignature = computeSignature(rawBody);
+    
+    // Retrieve the signature sent by Cashfree.
+    // Check that the header name matches what Cashfree sends.
+    // For example, if Cashfree uses "x-cashfree-signature":
+    const receivedSignature = req.headers['x-cashfree-signature'];
+    
+    console.log('Received Signature:', receivedSignature);
+    console.log('Computed Signature:', computedSignature);
+    
+    // If signatures do not match, reject the request.
+    if (computedSignature !== receivedSignature) {
       return res.status(401).send('Unauthorized: Invalid signature');
     }
-
-    const orderId = payload.orderId;
-    const transactionStatus = payload.txStatus;
-
-    // If payment was successful, update your record.
+    
+    // Parse the raw body as JSON (since we need to process the webhook data)
+    const payload = JSON.parse(rawBody);
+    
+    // Process the Payment Links webhook payload.
+    // (For example, check if payment was successful and then update your record.)
+    const transactionStatus = payload.data?.order?.transaction_status;
+    const orderId = payload.data?.order?.order_id;
+    
     if (transactionStatus === 'SUCCESS') {
+      // Update your persistent record
       await updateEarlyAccessRecord(orderId, {
         paid: true,
-        transactionId: payload.referenceId,
+        transactionId: payload.data.order.transaction_id,
         timestamp: new Date().toISOString(),
       });
     }
-
-    // Return a successful response.
+    
     res.status(200).send('Webhook processed successfully');
   } catch (error) {
     console.error("Error processing Cashfree webhook:", error);
@@ -37,50 +65,26 @@ export default async function handler(req, res) {
 }
 
 /**
- * Verify the Cashfree webhook signature.
- *
- * Steps:
- * 1. Sort the data keys alphabetically.
- * 2. Concatenate all the values (in order) to form a string (postData).
- * 3. Create an HMAC SHA256 hash of that string using your secret key.
- * 4. Base64 encode the resulting hash.
- * 5. Compare it with the signature that came in the header.
+ * Compute the HMAC SHA256 signature over the raw payload and encode it in base64.
+ * @param {string} rawBody - The raw JSON string received from Cashfree.
+ * @returns {string} - The computed signature.
  */
-function verifyCashfreeSignature(headers, payload) {
-  const clientSecret = process.env.CASHFREE_SECRET; // Your secret key from Cashfree.
+function computeSignature(rawBody) {
+  // Get your secret key from environment variables.
+  const secret = process.env.CASHFREE_SECRET;
   
-  // Retrieve the signature sent by Cashfree. Make sure the header name matches.
-  const receivedSignature = headers['x-cashfree-signature'];
-  
-  // 1. Get all keys from the payload and sort them.
-  const sortedKeys = Object.keys(payload).sort();
-
-  // 2. Concatenate the corresponding values.
-  let postData = '';
-  for (const key of sortedKeys) {
-    postData += payload[key];
-  }
-
-  // 3. Generate a hash using HMAC-SHA256 with your secret.
-  const hmac = crypto.createHmac('sha256', clientSecret);
-  hmac.update(postData);
-  
-  // 4. Base64 encode the hash.
-  const computedSignature = hmac.digest('base64');
-
-  // Debug: Log both signatures for testing (remove or disable these logs in production)
-  console.log('Received Signature:', receivedSignature);
-  console.log('Computed Signature:', computedSignature);
-
-  // 5. Compare your computed signature with the one received.
-  return computedSignature === receivedSignature;
+  // Create HMAC using SHA256, then update with the raw payload,
+  // and finally base64 encode the digest.
+  const hmac = crypto.createHmac('sha256', secret);
+  hmac.update(rawBody);
+  return hmac.digest('base64');
 }
 
 /**
- * Dummy update function to record that early access payment was successful.
- * Replace with your actual code to update a Google Sheet, database, or Shopify order metafield.
+ * Dummy function to update the early access record.
+ * Replace this with your actual logic (e.g., update Google Sheets, database, or Shopify metafield).
  */
 async function updateEarlyAccessRecord(orderId, paymentData) {
   console.log(`Updating record for order ${orderId}:`, paymentData);
-  // TODO: Implement the update (e.g., using Google Sheets API or your database)
+  // TODO: Implement your update logic.
 }
