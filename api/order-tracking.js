@@ -2,6 +2,12 @@
 import { google } from 'googleapis';
 import Shopify from 'shopify-api-node';
 
+// Placeholder for email verification logic.
+async function isEmailVerified(email) {
+  // Replace with your actual verification mechanism.
+  return true;
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET');
@@ -60,6 +66,7 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'We encountered an issue connecting to our order system. Please try again later.' });
   }
 
+  // Look up the song status in the Google Sheet
   let isSongReady = false;
   let mp3Link = null;
   const orderName = shopifyOrder.name.replace('#', '');
@@ -76,6 +83,7 @@ export default async function handler(req, res) {
     const sheets = google.sheets({ version: 'v4', auth });
     const sheetId = process.env.SHEET_ID;
     
+    // Assume Sheet1: column B holds order IDs, column D holds download links, and column E has the readiness flag.
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetId,
       range: 'Sheet1!A2:E',
@@ -96,7 +104,46 @@ export default async function handler(req, res) {
     console.error("Google Sheets error:", err);
   }
 
+  // Determine the appropriate status message.
+  let statusMessage = "";
+  const currentDate = new Date();
+  let expectedDeliveryDate = new Date(shopifyOrder.created_at);
+  // For example, assume expected delivery is 5 days after order creation. Adjust if needed.
+  expectedDeliveryDate.setDate(expectedDeliveryDate.getDate() + 5);
+
+  // Case 1: Order is fulfilled.
+  if (shopifyOrder.fulfillment_status === "fulfilled") {
+    if (mp3Link && isSongReady) {
+      if (await isEmailVerified(customerEmail)) {
+        statusMessage = "Song ready. Download available.";
+      } else {
+        statusMessage = "Song ready but email not verified. Please verify your email to download.";
+        mp3Link = null; // Do not show download link.
+      }
+    } else {
+      statusMessage = "Delivered";
+    }
+  }
+  // Case 2: Expected delivery date passed.
+  else if (currentDate > expectedDeliveryDate) {
+    if (mp3Link && isSongReady) {
+      if (await isEmailVerified(customerEmail)) {
+        statusMessage = "Song ready. Download available.";
+      } else {
+        statusMessage = "Song ready but email not verified. Please verify your email to download.";
+        mp3Link = null;
+      }
+    } else {
+      statusMessage = "Song ready";
+    }
+  }
+  else {
+    // Fallback to Shopify's fulfillment status if none of the above apply.
+    statusMessage = shopifyOrder.fulfillment_status;
+  }
+
   return res.status(200).json({
+    statusMessage,
     isFulfilled: shopifyOrder.fulfillment_status === "fulfilled",
     isSongReady,
     mp3Link,
@@ -111,3 +158,4 @@ export default async function handler(req, res) {
     }
   });
 }
+
