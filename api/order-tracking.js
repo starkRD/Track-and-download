@@ -1,116 +1,89 @@
-// pages/api/order-tracking.js
+// pages/api/create-order.js
 
-import { google } from 'googleapis';
-import Shopify from 'shopify-api-node';
+import fetch from 'node-fetch'; // For Node versions before 18
 
 export default async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
+  // Handle preflight (OPTIONS)
   if (req.method === 'OPTIONS') {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     return res.status(200).end();
   }
-
-  const query = req.query.query;
-  if (!query) {
-    return res.status(400).json({ error: 'Missing order ID or email.' });
+  
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method Not Allowed' });
   }
-
-  let shopifyOrder = null;
-  let customerEmail = "";
+  
+  const { orderId, amount, customerName, customerEmail, customerPhone } = req.body;
+  
+  // Validate required fields
+  if (!orderId || !amount || !customerName || !customerEmail || !customerPhone) {
+    return res.status(400).json({ error: 'Missing required payment fields.' });
+  }
   
   try {
-    const shopify = new Shopify({
-      shopName: process.env.SHOPIFY_STORE,
-      accessToken: process.env.SHOPIFY_ADMIN_TOKEN,
-    });
+    // Set CORS headers for response
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-    const nameQuery = query.startsWith("#") ? query : `#${query}`;
-    const orders = await shopify.order.list({ name: nameQuery, limit: 1 });
-    
-    if (orders.length > 0) {
-      shopifyOrder = orders[0];
-    } else if (!isNaN(Number(query))) {
-      try {
-        shopifyOrder = await shopify.order.get(Number(query));
-      } catch (idError) {
-        console.log("Order ID lookup failed:", idError.message);
-      }
-    }
-    
-    if (!shopifyOrder && query.includes('@')) {
-      try {
-        const emailOrders = await shopify.order.list({ email: query.toLowerCase(), limit: 1 });
-        if (emailOrders.length > 0) {
-          shopifyOrder = emailOrders[0];
-        }
-      } catch (emailError) {
-        console.log("Email lookup failed:", emailError.message);
-      }
-    }
+    // Sanitize base order id: remove any leading "#" and invalid characters.
+    let baseOrderId = orderId.replace(/^#/, '').replace(/[^A-Za-z0-9_-]/g, '');
+    // Append a unique suffix (timestamp and random number)
+    const suffix = "_" + Date.now() + "_" + Math.floor(Math.random() * 1000);
+    const uniqueOrderId = baseOrderId + suffix;
 
-    if (!shopifyOrder) {
-      return res.status(404).json({ error: 'Order not found. Please check the order number or email and try again.' });
-    }
-    
-    customerEmail = (shopifyOrder.email || "").trim().toLowerCase();
-    
-  } catch (err) {
-    console.error("Shopify error:", err);
-    return res.status(500).json({ error: 'We encountered an issue connecting to our order system. Please try again later.' });
-  }
+    const numericAmount = parseFloat(amount);
+    const customerId = generateCustomerId(); // This can be generated or retrieved if available.
 
-  // Update the range to read up through column F (where early access flag is stored)
-  let isSongReady = false;
-  let mp3Link = null;
-  const orderName = shopifyOrder.name.replace('#', '');
-  
-  try {
-    const auth = new google.auth.GoogleAuth({
-      credentials: {
-        client_email: process.env.GOOGLE_CLIENT_EMAIL,
-        private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+    // Build the payload using snake_case as required.
+    const payload = {
+      order_id: uniqueOrderId,          // unique composite order id.
+      order_amount: numericAmount,
+      order_currency: 'INR',
+      customer_details: {
+        customer_id: customerId,
+        customer_name: customerName,
+        customer_email: customerEmail,
+        customer_phone: customerPhone
       },
-      scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
-    });
-    
-    const sheets = google.sheets({ version: 'v4', auth });
-    // Update the range to include column F
-    const sheetId = process.env.SHEET_ID;
-    const response = await sheets.spreadsheets.values.get({
-      spreadsheetId: sheetId,
-      range: 'Sheet1!A2:F', // Now reading columns A to F
-    });
-    
-    const rows = response.data.values || [];
-    for (const row of rows) {
-      if (row.length >= 6) { // Now 6 columns: Column F is index 5
-        const sheetOrderId = (row[1] || "").trim();
-        if (sheetOrderId === orderName || sheetOrderId === query.trim()) {
-          // Column F (index 5) contains the early access flag; check if it equals "yes"
-          isSongReady = (row[5] || "").toLowerCase() === "yes";
-          mp3Link = row[3] || null;
-          break;
-        }
+      // Optional meta: you can include return_url or notify_url
+      order_meta: {
+        return_url: process.env.CASHFREE_RETURN_URL || null,
+        notify_url: process.env.CASHFREE_NOTIFY_URL || null,
       }
-    }
-  } catch (err) {
-    console.error("Google Sheets error:", err);
-  }
+    };
 
-  return res.status(200).json({
-    isFulfilled: shopifyOrder.fulfillment_status === "fulfilled",
-    isSongReady,
-    mp3Link,
-    emailFromShopify: customerEmail,
-    order: {
-      name: shopifyOrder.name,
-      id: shopifyOrder.id,
-      created_at: shopifyOrder.created_at,
-      fulfillment_status: shopifyOrder.fulfillment_status,
-      email: customerEmail,
-      line_items: shopifyOrder.line_items.map(i => ({ variant_id: i.variant_id })),
+    console.log("Payload sent to Cashfree:", payload);
+
+    const response = await fetch('https://api.cashfree.com/pg/orders', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-client-id': process.env.CASHFREE_CLIENT_ID,
+        'x-client-secret': process.env.CASHFREE_CLIENT_SECRET,
+        'x-api-version': '2025-01-01'
+      },
+      body: JSON.stringify(payload)
+    });
+
+    const data = await response.json();
+    console.log("Response from Cashfree:", data);
+
+    if (!response.ok) {
+      console.error('Cashfree create-order error:', data);
+      return res.status(response.status).json({ error: data.message || 'Cashfree order creation failed.' });
     }
-  });
+
+    // Return the successful response (must include payment_session_id).
+    return res.status(200).json(data);
+  } catch (error) {
+    console.error('Error creating Cashfree order:', error);
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+}
+
+function generateCustomerId() {
+  return "cust_" + Date.now() + "_" + Math.floor(Math.random() * 1000);
 }
