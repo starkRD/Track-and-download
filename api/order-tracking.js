@@ -1,66 +1,113 @@
 // pages/api/order-tracking.js
+import { google } from 'googleapis';
+import Shopify from 'shopify-api-node';
+
 export default async function handler(req, res) {
-  if (req.method !== "GET") {
-    res.status(405).json({ error: "Method not allowed" });
-    return;
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
   }
 
-  const { query } = req;
-  const orderQuery = query.query;
-
-  if (!orderQuery) {
-    res.status(400).json({ error: "Missing query parameter." });
-    return;
+  const query = req.query.query;
+  if (!query) {
+    return res.status(400).json({ error: 'Missing order ID or email.' });
   }
 
-  const isEmail = orderQuery.includes("@");
-  const shopifyStore = process.env.SHOPIFY_STORE;
-  const adminApiAccessToken = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
-  let url = `https://${shopifyStore}/admin/api/2023-01/orders.json?status=any`;
-  if (isEmail) {
-    url += `&email=${encodeURIComponent(orderQuery)}`;
-  } else {
-    url += `&name=${encodeURIComponent(orderQuery)}`;
-  }
-
+  let shopifyOrder = null;
+  let customerEmail = "";
+  
   try {
-    const response = await fetch(url, {
-      headers: {
-        "X-Shopify-Access-Token": adminApiAccessToken,
-        "Content-Type": "application/json",
-      },
+    const shopify = new Shopify({
+      shopName: process.env.SHOPIFY_STORE,
+      accessToken: process.env.SHOPIFY_ADMIN_TOKEN,
     });
-    const data = await response.json();
 
-    if (!data.orders || data.orders.length === 0) {
-      res.status(404).json({ error: "Order not found." });
-      return;
+    const nameQuery = query.startsWith("#") ? query : `#${query}`;
+    const orders = await shopify.order.list({ name: nameQuery, limit: 1 });
+    
+    if (orders.length > 0) {
+      shopifyOrder = orders[0];
+    } else if (!isNaN(Number(query))) {
+      try {
+        shopifyOrder = await shopify.order.get(Number(query));
+      } catch (idError) {
+        console.log("Order ID lookup failed:", idError.message);
+      }
+    }
+    
+    if (!shopifyOrder && query.includes('@')) {
+      try {
+        const emailOrders = await shopify.order.list({ email: query.toLowerCase(), limit: 1 });
+        if (emailOrders.length > 0) {
+          shopifyOrder = emailOrders[0];
+        }
+      } catch (emailError) {
+        console.log("Email lookup failed:", emailError.message);
+      }
     }
 
-    const order = data.orders[0];
-    const fullEmail = order.customer ? order.customer.email : "";
-    let maskedEmail = "";
-    if (fullEmail) {
-      const [user, domain] = fullEmail.split("@");
-      maskedEmail = user[0] + "***@" + domain;
+    if (!shopifyOrder) {
+      return res.status(404).json({ error: 'Order not found. Please check the order number or email and try again.' });
     }
-
-    res.status(200).json({
-      order: {
-        created_at: order.created_at,
-        name: order.name,
-        fulfillment_status: order.fulfillment_status,
-        line_items: order.line_items.map((item) => ({
-          variant_id: item.variant_id,
-        })),
-      },
-      customer: {
-        fullEmail, // This value is not displayed to the user.
-        maskedEmail,
-      },
-    });
-  } catch (error) {
-    console.error("Error fetching order details:", error);
-    res.status(500).json({ error: "Server error." });
+    
+    customerEmail = (shopifyOrder.email || "").trim().toLowerCase();
+    
+  } catch (err) {
+    console.error("Shopify error:", err);
+    return res.status(500).json({ error: 'We encountered an issue connecting to our order system. Please try again later.' });
   }
+
+  let isSongReady = false;
+  let mp3Link = null;
+  const orderName = shopifyOrder.name.replace('#', '');
+  
+  try {
+    const auth = new google.auth.GoogleAuth({
+      credentials: {
+        client_email: process.env.GOOGLE_CLIENT_EMAIL,
+        private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+      },
+      scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+    });
+    
+    const sheets = google.sheets({ version: 'v4', auth });
+    const sheetId = process.env.SHEET_ID;
+    
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId: sheetId,
+      range: 'Sheet1!A2:E',
+    });
+    
+    const rows = response.data.values || [];
+    for (const row of rows) {
+      if (row.length >= 5) {
+        const orderId = (row[1] || "").trim();
+        if (orderId === orderName || orderId === query.trim()) {
+          isSongReady = (row[4] || "").toLowerCase() === "yes";
+          mp3Link = row[3] || null;
+          break;
+        }
+      }
+    }
+  } catch (err) {
+    console.error("Google Sheets error:", err);
+  }
+
+  return res.status(200).json({
+    isFulfilled: shopifyOrder.fulfillment_status === "fulfilled",
+    isSongReady,
+    mp3Link,
+    emailFromShopify: customerEmail,
+    order: {
+      name: shopifyOrder.name,
+      id: shopifyOrder.id,
+      created_at: shopifyOrder.created_at,
+      fulfillment_status: shopifyOrder.fulfillment_status,
+      email: customerEmail,
+      line_items: shopifyOrder.line_items.map(i => ({ variant_id: i.variant_id })),
+    }
+  });
 }
