@@ -104,7 +104,9 @@ export default async function handler(req, res) {
       ) {
         console.log(`Found match for Order ${sheetOrderId}: Song Ready=${row[4]}, MP3 Link=${row[3]}`);
         mp3Link = row[3] || null; // Column D
-        isSongReady = (row[4] || '').trim().toLowerCase() === 'yes';
+
+        // Convert the cell value to a string to avoid issues if it is a boolean or other type.
+        isSongReady = String(row[4] || '').trim().toLowerCase() === 'yes';
         break;
       }
     }
