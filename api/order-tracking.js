@@ -21,29 +21,41 @@ export default async function handler(req, res) {
   }
   
   let shopifyOrder = null;
-  let customerEmail = "";
+try {
+  // Try EXACT user input as the order name
+  let ordersByName = await shopify.order.list({ name: query, limit: 1 });
   
-  try {
-    // Initialize Shopify API using environment variables
-    const shopify = new Shopify({
-      shopName: process.env.SHOPIFY_STORE,
-      accessToken: process.env.SHOPIFY_ADMIN_TOKEN,
-    });
-
-    // First try: search by order name (adding '#' if necessary)
-    const nameQuery = query.startsWith("#") ? query : `#${query}`;
-    const ordersByName = await shopify.order.list({ name: nameQuery, limit: 1 });
+  if (ordersByName.length > 0) {
+    shopifyOrder = ordersByName[0];
+  } else {
+    // If not found, try adding "#" prefix
+    const altNameQuery = query.startsWith("#") ? query : `#${query}`;
+    const altOrders = await shopify.order.list({ name: altNameQuery, limit: 1 });
     
-    if (ordersByName.length > 0) {
-      shopifyOrder = ordersByName[0];
-    } else if (!isNaN(Number(query))) {
-      // Second try: if query is numeric then use as an ID
-      try {
-        shopifyOrder = await shopify.order.get(Number(query));
-      } catch (err) {
-        console.log("Order ID lookup failed:", err.message);
-      }
+    if (altOrders.length > 0) {
+      shopifyOrder = altOrders[0];
     }
+  }
+  
+  // Optionally, if STILL not found, try numeric ID
+  if (!shopifyOrder && !isNaN(Number(query))) {
+    try {
+      shopifyOrder = await shopify.order.get(Number(query));
+    } catch (idErr) {
+      console.log("Order ID numeric lookup failed:", idErr.message);
+    }
+  }
+
+  if (!shopifyOrder) {
+    return res.status(404).json({ error: 'Order not found. Please check the order number or email and try again.' });
+  }
+
+  // At this point, shopifyOrder is found. Continue with sheet logic...
+} catch (err) {
+  console.error("Shopify error:", err);
+  return res.status(500).json({ error: 'We encountered an issue connecting to our order system. Please try again later.' });
+}
+
     
     // Third try: if query contains '@', search by customer email
     if (!shopifyOrder && query.includes('@')) {
