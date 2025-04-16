@@ -104,22 +104,29 @@ export default async function handler(req, res) {
     const orderNameNoHash = shopifyOrder.name.replace(/^#/, '').trim();
     const queryValueNoHash = queryValue.replace(/^#/, '').trim();
 
-    // Important fix: log for debugging the exact values we're comparing
+    // Debugging: log the values we're searching for
     console.log(`Looking for order match: ${orderNameNoHash} or ${queryValueNoHash}`);
     
-    // Improved search logic
+    // Improved search logic with better type handling
     for (const row of rows) {
       if (row.length < 5) continue;
       
       const sheetOrderId = (row[1] || '').trim(); // Column B
       const sheetEmail = (row[2] || '').trim().toLowerCase(); // Column C
       
+      // Debugging: log values being compared
       console.log(`Sheet data: ID=${sheetOrderId}, Email=${sheetEmail}`);
       
-      // Match by order ID (with various formats) or email
+      // Convert to numbers for numeric comparison if possible
+      const numericOrderId = !isNaN(parseInt(sheetOrderId)) ? parseInt(sheetOrderId) : null;
+      const numericOrderName = !isNaN(parseInt(orderNameNoHash)) ? parseInt(orderNameNoHash) : null;
+      
+      // Match by order ID with multiple formats and types of comparison
       if (sheetOrderId === orderNameNoHash || 
           sheetOrderId === queryValueNoHash || 
           sheetOrderId === shopifyOrder.name ||
+          String(sheetOrderId) === String(orderNameNoHash) ||
+          (numericOrderId !== null && numericOrderName !== null && numericOrderId === numericOrderName) ||
           (sheetEmail && sheetEmail === customerEmail.toLowerCase())) {
         
         console.log(`Found match! Song ready: ${row[4]}, MP3: ${row[3]}`);
