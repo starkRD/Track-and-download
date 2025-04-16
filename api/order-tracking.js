@@ -9,7 +9,6 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  // Handle preflight OPTIONS request
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
@@ -31,14 +30,14 @@ export default async function handler(req, res) {
       accessToken: process.env.SHOPIFY_ADMIN_TOKEN,
     });
 
-    // STEP 1: Try the exact query as the order name
+    // Step 1: Try exact match for order name
     let orders = await shopify.order.list({ name: queryValue, limit: 1 });
     if (orders.length > 0) {
       shopifyOrder = orders[0];
     } else {
-      // STEP 2: Try adding '#' prefix if not present
+      // Step 2: Try with "#" prefix
       if (!queryValue.startsWith('#')) {
-        let altName = `#${queryValue}`;
+        const altName = `#${queryValue}`;
         orders = await shopify.order.list({ name: altName, limit: 1 });
         if (orders.length > 0) {
           shopifyOrder = orders[0];
@@ -46,7 +45,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // STEP 3: If not found and query is numeric, try numeric lookup
+    // Step 3: If not found and query is numeric, try numeric ID lookup
     if (!shopifyOrder && !isNaN(Number(queryValue))) {
       try {
         shopifyOrder = await shopify.order.get(Number(queryValue));
@@ -55,7 +54,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // STEP 4: If still not found and query contains '@', try email-based lookup
+    // Step 4: If not found and query includes '@', try email lookup
     if (!shopifyOrder && queryValue.includes('@')) {
       const emailQuery = queryValue.toLowerCase();
       try {
@@ -75,10 +74,10 @@ export default async function handler(req, res) {
     customerEmail = (shopifyOrder.email || '').trim().toLowerCase();
   } catch (shopifyErr) {
     console.error("Shopify error:", shopifyErr);
-    return res.status(500).json({ error: 'We encountered an issue connecting to our order system. Please try again later.' });
+    return res.status(500).json({ error: 'Error connecting to our order system. Please try again later.' });
   }
 
-  // Next: Check the Google Sheet for song readiness and MP3 link.
+  // Google Sheets lookup
   let isSongReady = false;
   let mp3Link = null;
   try {
@@ -92,32 +91,32 @@ export default async function handler(req, res) {
     const sheets = google.sheets({ version: 'v4', auth });
     const sheetId = process.env.SHEET_ID;
 
-    // Our sheet columns (A–E):
-    // A = Timestamp, B = Order ID, C = Customer Email, D = MP3 Link, E = "Is the song ready?" (yes/no)
+    // Our sheet columns:
+    // A: Timestamp, B: Order ID, C: Customer Email, D: MP3 Link, E: Song Ready?
     const result = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetId,
       range: 'Sheet1!A2:E',
     });
     const rows = result.data.values || [];
 
-    // Remove leading '#' from Shopify order name
     const orderNameNoHash = shopifyOrder.name.replace(/^#/, '').trim();
 
     for (const row of rows) {
       if (row.length < 5) continue;
-      const sheetOrderId = (row[1] || '').trim(); // Column B
+      const sheetOrderId = (row[1] || '').trim();
       if (sheetOrderId === orderNameNoHash || sheetOrderId === queryValue) {
-        mp3Link = row[3] || null;             // Column D
-        isSongReady = (row[4] || '').toLowerCase() === 'yes';  // Column E
+        mp3Link = row[3] || null;
+        // Use trim() to normalize the ready flag.
+        isSongReady = (row[4] || '').trim().toLowerCase() === 'yes';
         break;
       }
     }
   } catch (sheetErr) {
     console.error("Google Sheets error:", sheetErr);
-    // Proceed even if sheet read fails.
+    // Do not fail the entire request if Sheets lookup fails.
   }
 
-  // Return aggregated data to the frontend.
+  // Return the consolidated result.
   return res.status(200).json({
     isFulfilled: (shopifyOrder.fulfillment_status || '').toLowerCase() === 'fulfilled',
     isSongReady,
