@@ -25,6 +25,7 @@ export default async function handler(req, res) {
       accessToken: process.env.SHOPIFY_ADMIN_TOKEN,
     });
 
+    // Try searching order by order name, numeric ID, or email
     const nameQuery = query.startsWith("#") ? query : `#${query}`;
     const orders = await shopify.order.list({ name: nameQuery, limit: 1 });
     
@@ -62,9 +63,12 @@ export default async function handler(req, res) {
 
   let isSongReady = false;
   let mp3Link = null;
-  const orderName = shopifyOrder.name.replace('#', '');
   
+  // Remove the '#' prefix from the Shopify order name if needed
+  const orderName = shopifyOrder.name.replace('#', '').trim();
+
   try {
+    // Google Sheets Authentication
     const auth = new google.auth.GoogleAuth({
       credentials: {
         client_email: process.env.GOOGLE_CLIENT_EMAIL,
@@ -78,22 +82,30 @@ export default async function handler(req, res) {
     
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetId,
-      range: 'Sheet1!A2:E',
+      range: 'Sheet1!A2:E', // Adjust if your sheet has different layout
     });
     
     const rows = response.data.values || [];
     for (const row of rows) {
       if (row.length >= 5) {
-        const orderId = (row[1] || "").trim();
-        if (orderId === orderName || orderId === query.trim()) {
-          isSongReady = (row[4] || "").toLowerCase() === "yes";
-          mp3Link = row[3] || null;
+        // row[1] should contain the Order ID from your sheet
+        const orderIdFromSheet = (row[1] || "").trim();
+        
+        // Compare the orderId from sheet with the Shopify order name or query input
+        if (orderIdFromSheet === orderName || orderIdFromSheet === query.trim()) {
+          // row[4] should contain the flag (e.g., "yes") indicating the song is ready
+          const readyValue = (row[4] || "").trim().toLowerCase();
+          isSongReady = (readyValue === "yes");
+          
+          // row[3] should contain the MP3 link
+          mp3Link = row[3] ? row[3].trim() : null;
           break;
         }
       }
     }
   } catch (err) {
     console.error("Google Sheets error:", err);
+    // Proceed without sheet data if error occurs
   }
 
   return res.status(200).json({
