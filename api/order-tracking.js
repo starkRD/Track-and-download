@@ -100,32 +100,48 @@ export default async function handler(req, res) {
     });
     const rows = result.data.values || [];
 
-    // Remove leading '#' from Shopify order name
+    // Remove leading '#' from Shopify order name for comparison
     const orderNameNoHash = shopifyOrder.name.replace(/^#/, '').trim();
+    const queryValueNoHash = queryValue.replace(/^#/, '').trim();
 
+    // Important fix: log for debugging the exact values we're comparing
+    console.log(`Looking for order match: ${orderNameNoHash} or ${queryValueNoHash}`);
+    
+    // Improved search logic
     for (const row of rows) {
       if (row.length < 5) continue;
-      const sheetOrderId = (row[1] || '').trim(); // Column B
-      const sheetEmail = (row[2] || '').trim().toLowerCase(); // Column C (Customer Email)
       
-      // Match by order ID or by customer email if order IDs don't match
-      if (sheetOrderId === orderNameNoHash || sheetOrderId === queryValue || 
-          (sheetEmail && sheetEmail === customerEmail)) {
+      const sheetOrderId = (row[1] || '').trim(); // Column B
+      const sheetEmail = (row[2] || '').trim().toLowerCase(); // Column C
+      
+      console.log(`Sheet data: ID=${sheetOrderId}, Email=${sheetEmail}`);
+      
+      // Match by order ID (with various formats) or email
+      if (sheetOrderId === orderNameNoHash || 
+          sheetOrderId === queryValueNoHash || 
+          sheetOrderId === shopifyOrder.name ||
+          (sheetEmail && sheetEmail === customerEmail.toLowerCase())) {
+        
+        console.log(`Found match! Song ready: ${row[4]}, MP3: ${row[3]}`);
         mp3Link = row[3] || null;             // Column D
         isSongReady = (row[4] || '').toLowerCase() === 'yes';  // Column E
         break;
       }
     }
+    
+    // Log the result of our search
+    console.log(`Final result: isSongReady=${isSongReady}, mp3Link=${mp3Link ? 'exists' : 'null'}`);
+    
   } catch (sheetErr) {
     console.error("Google Sheets error:", sheetErr);
-    // Proceed even if sheet read fails
+    // We still proceed even if sheet read fails
   }
 
   // Return aggregated data to the frontend
   return res.status(200).json({
     isFulfilled: (shopifyOrder.fulfillment_status || '').toLowerCase() === 'fulfilled',
-    isSongReady,
-    mp3Link,
+    isSongReady, // Directly from sheet
+    mp3Link,     // Directly from sheet
     emailFromShopify: customerEmail,
     order: {
       name: shopifyOrder.name,
