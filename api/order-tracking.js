@@ -25,7 +25,7 @@ export default async function handler(req, res) {
       accessToken: process.env.SHOPIFY_ADMIN_TOKEN,
     });
 
-    // Try by order name (e.g. "#4170")
+    // Lookup by order name (e.g. "#4170")
     const nameQuery = query.startsWith("#") ? query : `#${query}`;
     console.log("🔍 Trying name lookup:", nameQuery);
     const orders = await shopify.order.list({ name: nameQuery, limit: 1 });
@@ -34,7 +34,7 @@ export default async function handler(req, res) {
       lookupMethod = "order.name";
     }
 
-    // Try by order ID
+    // Fallback: Lookup by order ID
     if (!shopifyOrder && !isNaN(Number(query))) {
       try {
         console.log("🔍 Trying ID lookup:", query);
@@ -45,11 +45,15 @@ export default async function handler(req, res) {
       }
     }
 
-    // Try by email
+    // Fallback: Lookup by email with 'status: any' to capture all orders
     if (!shopifyOrder && query.includes('@')) {
       try {
         console.log("🔍 Trying email lookup:", query);
-        const emailOrders = await shopify.order.list({ email: query.toLowerCase(), limit: 1 });
+        const emailOrders = await shopify.order.list({
+          email: query.toLowerCase(),
+          status: 'any',
+          limit: 1
+        });
         if (emailOrders.length > 0) {
           shopifyOrder = emailOrders[0];
           lookupMethod = "order.email";
@@ -92,6 +96,7 @@ export default async function handler(req, res) {
     const rows = response.data.values || [];
     for (const row of rows) {
       if (row.length >= 5) {
+        // Normalize the order ID from sheet (remove any '#' and trim)
         const orderIdFromSheet = (row[1] || "").replace('#', '').trim();
         const readyValue = (row[4] || "").trim().toLowerCase();
 
