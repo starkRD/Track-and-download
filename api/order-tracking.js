@@ -25,7 +25,7 @@ export default async function handler(req, res) {
       accessToken: process.env.SHOPIFY_ADMIN_TOKEN,
     });
 
-    // Lookup by order name using status: 'any'
+    // Lookup by order name (using status: 'any' to include fulfilled orders)
     const nameQuery = query.startsWith("#") ? query : `#${query}`;
     console.log("🔍 Trying name lookup (status:any):", nameQuery);
     const orders = await shopify.order.list({
@@ -49,7 +49,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // Fallback: Lookup by email with status: 'any'
+    // Fallback: Lookup by email (with status: 'any')
     if (!shopifyOrder && query.includes('@')) {
       try {
         console.log("🔍 Trying email lookup (status:any):", query);
