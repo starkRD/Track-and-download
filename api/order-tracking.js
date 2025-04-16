@@ -1,5 +1,3 @@
-// pages/api/order-tracking.js
-
 import { google } from 'googleapis';
 import Shopify from 'shopify-api-node';
 
@@ -25,20 +23,21 @@ export default async function handler(req, res) {
   let shopifyOrder = null;
   let customerEmail = '';
 
+  // Try fetching the order from Shopify
   try {
     const shopify = new Shopify({
       shopName: process.env.SHOPIFY_STORE,
       accessToken: process.env.SHOPIFY_ADMIN_TOKEN,
     });
 
-    // STEP 1: Try the exact query as the order name
+    // STEP 1: Try exact query as the order name
     let orders = await shopify.order.list({ name: queryValue, limit: 1 });
     if (orders.length > 0) {
       shopifyOrder = orders[0];
     } else {
-      // STEP 2: Try adding '#' prefix if not present
+      // STEP 2: Try adding '#' prefix (if user input lacks it)
       if (!queryValue.startsWith('#')) {
-        let altName = `#${queryValue}`;
+        const altName = `#${queryValue}`;
         orders = await shopify.order.list({ name: altName, limit: 1 });
         if (orders.length > 0) {
           shopifyOrder = orders[0];
@@ -56,6 +55,7 @@ export default async function handler(req, res) {
     }
 
     // STEP 4: If still not found and query contains '@', try email-based lookup
+    // (Optional: keep for safety but note that matching in the sheet will be based on order ID)
     if (!shopifyOrder && queryValue.includes('@')) {
       const emailQuery = queryValue.toLowerCase();
       try {
@@ -69,7 +69,7 @@ export default async function handler(req, res) {
     }
 
     if (!shopifyOrder) {
-      return res.status(404).json({ error: 'Order not found. Please check the order number or email and try again.' });
+      return res.status(404).json({ error: 'Order not found. Please check the order number and try again.' });
     }
 
     customerEmail = (shopifyOrder.email || '').trim().toLowerCase();
@@ -82,6 +82,7 @@ export default async function handler(req, res) {
   let isSongReady = false;
   let mp3Link = null;
   try {
+    // Set up Google Sheets access
     const auth = new google.auth.GoogleAuth({
       credentials: {
         client_email: process.env.GOOGLE_CLIENT_EMAIL,
@@ -100,55 +101,45 @@ export default async function handler(req, res) {
     });
     const rows = result.data.values || [];
 
-    // Remove leading '#' from Shopify order name for comparison
+    // Normalize Shopify order name by removing the '#' (if any)
     const orderNameNoHash = shopifyOrder.name.replace(/^#/, '').trim();
+    // Also normalize the query value (if user entered "#4134" vs "4134")
     const queryValueNoHash = queryValue.replace(/^#/, '').trim();
 
-    // Debugging: log the values we're searching for
     console.log(`Looking for order match: ${orderNameNoHash} or ${queryValueNoHash}`);
-    
-    // Improved search logic with better type handling
+
+    // Look up the record solely by comparing the order ID from Shopify (numeric only) with sheet Column B
     for (const row of rows) {
       if (row.length < 5) continue;
-      
-      const sheetOrderId = (row[1] || '').trim(); // Column B
-      const sheetEmail = (row[2] || '').trim().toLowerCase(); // Column C
-      
-      // Debugging: log values being compared
-      console.log(`Sheet data: ID=${sheetOrderId}, Email=${sheetEmail}`);
-      
-      // Convert to numbers for numeric comparison if possible
-      const numericOrderId = !isNaN(parseInt(sheetOrderId)) ? parseInt(sheetOrderId) : null;
-      const numericOrderName = !isNaN(parseInt(orderNameNoHash)) ? parseInt(orderNameNoHash) : null;
-      
-      // Match by order ID with multiple formats and types of comparison
-      if (sheetOrderId === orderNameNoHash || 
-          sheetOrderId === queryValueNoHash || 
-          sheetOrderId === shopifyOrder.name ||
-          String(sheetOrderId) === String(orderNameNoHash) ||
-          (numericOrderId !== null && numericOrderName !== null && numericOrderId === numericOrderName) ||
-          (sheetEmail && sheetEmail === customerEmail.toLowerCase())) {
-        
+
+      const sheetOrderId = (row[1] || '').trim(); // Value in Column B should be something like "4134"
+      // Convert to numbers (if possible) for comparison
+      const numericSheetOrderId = !isNaN(parseInt(sheetOrderId)) ? parseInt(sheetOrderId, 10) : null;
+      const numericOrderId = !isNaN(parseInt(orderNameNoHash)) ? parseInt(orderNameNoHash, 10) : null;
+
+      if (
+        sheetOrderId === orderNameNoHash ||
+        sheetOrderId === queryValueNoHash ||
+        (numericSheetOrderId !== null && numericOrderId !== null && numericSheetOrderId === numericOrderId)
+      ) {
         console.log(`Found match! Song ready: ${row[4]}, MP3: ${row[3]}`);
-        mp3Link = row[3] || null;             // Column D
-        isSongReady = (row[4] || '').toLowerCase() === 'yes';  // Column E
+        mp3Link = row[3] || null; // Column D holds the MP3 link
+        isSongReady = (row[4] || '').trim().toLowerCase() === 'yes'; // Column E should be "yes" or "no"
         break;
       }
     }
-    
-    // Log the result of our search
     console.log(`Final result: isSongReady=${isSongReady}, mp3Link=${mp3Link ? 'exists' : 'null'}`);
-    
+
   } catch (sheetErr) {
     console.error("Google Sheets error:", sheetErr);
-    // We still proceed even if sheet read fails
+    // Proceed even if sheet lookup fails
   }
 
-  // Return aggregated data to the frontend
+  // Return the aggregated order data along with song readiness and MP3 link
   return res.status(200).json({
     isFulfilled: (shopifyOrder.fulfillment_status || '').toLowerCase() === 'fulfilled',
-    isSongReady, // Directly from sheet
-    mp3Link,     // Directly from sheet
+    isSongReady, // Derived from the sheet
+    mp3Link,     // Derived from the sheet
     emailFromShopify: customerEmail,
     order: {
       name: shopifyOrder.name,
