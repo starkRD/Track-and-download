@@ -4,13 +4,75 @@ import Shopify from 'shopify-api-node';
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
 
+  // Handle email verification requests
+  if (req.method === 'POST') {
+    try {
+      const { orderId, verificationEmail } = req.body;
+      
+      // Validate inputs
+      if (!orderId || !verificationEmail) {
+        return res.status(400).json({ error: 'Missing order ID or verification email.' });
+      }
+      
+      // Get order details from Shopify
+      const shopify = new Shopify({
+        shopName: process.env.SHOPIFY_STORE,
+        accessToken: process.env.SHOPIFY_ADMIN_TOKEN,
+      });
+      
+      let shopifyOrder = null;
+      
+      // Try to find order by name
+      const nameQuery = orderId.startsWith("#") ? orderId : `#${orderId}`;
+      const orders = await shopify.order.list({ name: nameQuery, limit: 1 });
+      
+      if (orders.length > 0) {
+        shopifyOrder = orders[0];
+      } else if (!isNaN(Number(orderId))) {
+        try {
+          shopifyOrder = await shopify.order.get(Number(orderId));
+        } catch (idError) {
+          console.log("Order ID lookup failed:", idError.message);
+        }
+      }
+      
+      if (!shopifyOrder) {
+        return res.status(404).json({ error: 'Order not found.' });
+      }
+      
+      // Compare emails
+      const customerEmail = (shopifyOrder.email || "").trim().toLowerCase();
+      const providedEmail = verificationEmail.trim().toLowerCase();
+      
+      if (customerEmail !== providedEmail) {
+        return res.status(401).json({ error: 'Email verification failed.' });
+      }
+      
+      // Email verified - find song link in sheet
+      const mp3Link = await getSongLinkFromSheet(shopifyOrder.name.replace('#', ''));
+      
+      if (!mp3Link) {
+        return res.status(404).json({ error: 'Song not found. It may not be ready yet.' });
+      }
+      
+      return res.status(200).json({
+        verified: true,
+        mp3Link
+      });
+    } catch (err) {
+      console.error("Email verification error:", err);
+      return res.status(500).json({ error: 'Verification failed. Please try again later.' });
+    }
+  }
+
+  // Handle GET requests (existing order tracking functionality)
   const query = req.query.query;
   if (!query) {
     return res.status(400).json({ error: 'Missing order ID or email.' });
@@ -25,7 +87,7 @@ export default async function handler(req, res) {
       accessToken: process.env.SHOPIFY_ADMIN_TOKEN,
     });
 
-    // Same original logic for searching by order name, numeric ID, or email
+    // Search by order name, numeric ID, or email
     const nameQuery = query.startsWith("#") ? query : `#${query}`;
     const orders = await shopify.order.list({ name: nameQuery, limit: 1 });
     
@@ -61,65 +123,32 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'We encountered an issue connecting to our order system. Please try again later.' });
   }
 
-  // Lookup in Google Sheet (same as your original)
+  // Lookup in Google Sheet for song info
   let isSongReady = false;
   let mp3Link = null;
   const orderName = shopifyOrder.name.replace('#', '');
   
   try {
-    const auth = new google.auth.GoogleAuth({
-      credentials: {
-        client_email: process.env.GOOGLE_CLIENT_EMAIL,
-        private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-      },
-      scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
-    });
-    
-    const sheets = google.sheets({ version: 'v4', auth });
-    const sheetId = process.env.SHEET_ID;
-    
-    const response = await sheets.spreadsheets.values.get({
-      spreadsheetId: sheetId,
-      range: 'Sheet1!A2:E',
-    });
-    
-    const rows = response.data.values || [];
-    for (const row of rows) {
-      if (row.length >= 5) {
-        const orderId = (row[1] || "").trim();
-        if (orderId === orderName || orderId === query.trim()) {
-          isSongReady = (row[4] || "").toLowerCase() === "yes";
-          mp3Link = row[3] || null;
-          break;
-        }
-      }
-    }
+    mp3Link = await getSongLinkFromSheet(orderName);
+    isSongReady = !!mp3Link;
   } catch (err) {
     console.error("Google Sheets error:", err);
     // Don't fail the request; just continue with isSongReady=false, mp3Link=null
   }
 
-  // =========================
-  // NEW: Minimal logic for the 2 requested changes
-  // 1) If order is fulfilled => check sheet. If found => provide link; if not => "Delivered"
-  // 2) If expected delivery date is passed => show "Song ready" or provide link if the sheet says "ready"
-  // 3) Download possible only after email verification (handled by front end).
-  // =========================
-
-  // We'll keep your original code's approach for returning everything at the end,
-  // but we add a new field "statusOverride" for the front end to interpret if needed.
-  // Or you can simply modify your existing fields if you prefer.
-
-  // We'll assume "5 days" after created_at as the "expected delivery" threshold.
+  // Calculate delivery timeline and expected delivery date
+  // We'll assume "5 days" after created_at as the "expected delivery" threshold by default
   const createdAt = new Date(shopifyOrder.created_at);
-  const expectedDeliveryDate = new Date(createdAt);
-  expectedDeliveryDate.setDate(createdAt.getDate() + 5);
+  const timelineHours = getDeliveryTimeline(shopifyOrder);
+  const expectedDeliveryDate = new Date(createdAt.getTime() + timelineHours * 60 * 60 * 1000);
 
-  // We'll define a new variable:
-  let statusOverride = ""; // empty means "use your normal flow"
-
+  // Get current status based on time calculations
   const now = new Date();
+  let statusOverride = "";
 
+  // Check if delivery date has passed
+  const deliveryDatePassed = now > expectedDeliveryDate;
+  
   // 1) If fulfilled:
   if (shopifyOrder.fulfillment_status === "fulfilled") {
     if (isSongReady && mp3Link) {
@@ -131,11 +160,11 @@ export default async function handler(req, res) {
     }
   }
   // 2) Else if expected delivery date has passed:
-  else if (now > expectedDeliveryDate) {
+  else if (deliveryDatePassed) {
     if (isSongReady && mp3Link) {
       statusOverride = "Song ready";
     } else {
-      // Show "Song ready" even if it's not in the sheet, as you requested
+      // Show "Song ready" even if it's not in the sheet, as requested
       statusOverride = "Song ready";
     }
   }
@@ -145,22 +174,98 @@ export default async function handler(req, res) {
     statusOverride = shopifyOrder.fulfillment_status || "unfulfilled";
   }
 
-  // Return same data you used to return, plus our new "statusOverride" field
+  // Mask the email (show first character and domain part)
+  let maskedEmail = "";
+  if (customerEmail) {
+    const atIndex = customerEmail.indexOf('@');
+    if (atIndex > 0) {
+      maskedEmail = customerEmail.charAt(0) + 
+                    '*'.repeat(atIndex - 1) + 
+                    customerEmail.substring(atIndex);
+    }
+  }
+
+  // Return data
   return res.status(200).json({
-    // The same original fields
     isFulfilled: shopifyOrder.fulfillment_status === "fulfilled",
     isSongReady,
-    mp3Link,
-    emailFromShopify: customerEmail,
+    mp3Link: null, // Don't send the direct link until email verification
+    emailFromShopify: maskedEmail, // Send masked email
+    canDownload: (deliveryDatePassed || shopifyOrder.fulfillment_status === "fulfilled") && isSongReady,
     order: {
       name: shopifyOrder.name,
       id: shopifyOrder.id,
       created_at: shopifyOrder.created_at,
       fulfillment_status: shopifyOrder.fulfillment_status,
-      email: customerEmail,
+      email: maskedEmail,
       line_items: shopifyOrder.line_items.map(i => ({ variant_id: i.variant_id })),
     },
-    // Minimal addition:
+    expectedDeliveryDate: expectedDeliveryDate.toISOString(),
+    deliveryDatePassed,
     statusOverride
   });
+}
+
+// Helper function to get delivery timeline from variant IDs
+function getDeliveryTimeline(order) {
+  const variantTimelines = [
+    { ids: ["41290369269835"], hours: 240 }, // Basic: 10 days
+    { ids: ["41290369302603", "41274164510795"], hours: 120 }, // Standard: 5 days
+    { ids: ["41290369335371"], hours: 30 }, // Premium: 30 hours
+    { ids: ["41290369368139"], hours: 30 }, // Beast: 30 hours
+    { ids: ["41274164543563"], hours: 48 }, // FAST: 48 hours
+    { ids: ["41274164576331"], hours: 24 } // EXPRESS: 24 hours
+  ];
+
+  let matchedHours = [];
+  if (order.line_items && order.line_items.length > 0) {
+    order.line_items.forEach(item => {
+      let variantId = String(item.variant_id);
+      variantTimelines.forEach(variant => {
+        if (variant.ids.includes(variantId)) {
+          matchedHours.push(variant.hours);
+        }
+      });
+    });
+  }
+  
+  if (matchedHours.length > 0) {
+    return Math.min(...matchedHours);
+  }
+  return 240; // Default to 10 days
+}
+
+// Helper function to get song link from sheet
+async function getSongLinkFromSheet(orderName) {
+  const auth = new google.auth.GoogleAuth({
+    credentials: {
+      client_email: process.env.GOOGLE_CLIENT_EMAIL,
+      private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+    },
+    scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+  });
+  
+  const sheets = google.sheets({ version: 'v4', auth });
+  const sheetId = process.env.SHEET_ID;
+  
+  const response = await sheets.spreadsheets.values.get({
+    spreadsheetId: sheetId,
+    range: 'Sheet1!A2:E',
+  });
+  
+  const rows = response.data.values || [];
+  for (const row of rows) {
+    if (row.length >= 5) {
+      const orderId = (row[1] || "").trim();
+      if (orderId === orderName) {
+        const isSongReady = (row[4] || "").toLowerCase() === "yes";
+        if (isSongReady) {
+          return row[3] || null; // Return the MP3 link
+        }
+        break;
+      }
+    }
+  }
+  
+  return null;
 }
