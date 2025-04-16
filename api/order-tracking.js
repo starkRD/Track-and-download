@@ -17,6 +17,7 @@ export default async function handler(req, res) {
 
   let shopifyOrder = null;
   let customerEmail = "";
+  let lookupMethod = "none";
 
   try {
     const shopify = new Shopify({
@@ -24,28 +25,37 @@ export default async function handler(req, res) {
       accessToken: process.env.SHOPIFY_ADMIN_TOKEN,
     });
 
+    // Try by order name (e.g. "#4170")
     const nameQuery = query.startsWith("#") ? query : `#${query}`;
-console.log("Looking for Shopify order:", nameQuery); // ✅ Add this line
-const orders = await shopify.order.list({ name: nameQuery, limit: 1 });
-
+    console.log("🔍 Trying name lookup:", nameQuery);
+    const orders = await shopify.order.list({ name: nameQuery, limit: 1 });
     if (orders.length > 0) {
       shopifyOrder = orders[0];
-    } else if (!isNaN(Number(query))) {
+      lookupMethod = "order.name";
+    }
+
+    // Try by order ID
+    if (!shopifyOrder && !isNaN(Number(query))) {
       try {
+        console.log("🔍 Trying ID lookup:", query);
         shopifyOrder = await shopify.order.get(Number(query));
+        lookupMethod = "order.id";
       } catch (idError) {
-        console.log("Order ID lookup failed:", idError.message);
+        console.log("❌ Order ID lookup failed:", idError.message);
       }
     }
 
+    // Try by email
     if (!shopifyOrder && query.includes('@')) {
       try {
+        console.log("🔍 Trying email lookup:", query);
         const emailOrders = await shopify.order.list({ email: query.toLowerCase(), limit: 1 });
         if (emailOrders.length > 0) {
           shopifyOrder = emailOrders[0];
+          lookupMethod = "order.email";
         }
       } catch (emailError) {
-        console.log("Email lookup by email failed:", emailError.message);
+        console.log("❌ Email lookup failed:", emailError.message);
       }
     }
 
@@ -88,11 +98,7 @@ const orders = await shopify.order.list({ name: nameQuery, limit: 1 });
         if (orderIdFromSheet === orderName || orderIdFromSheet === query.trim()) {
           isSongReady = readyValue === 'yes';
           mp3Link = row[3] ? row[3].trim() : null;
-          console.log("✅ Sheet Match:", {
-            matchedOrderId: orderIdFromSheet,
-            isSongReady,
-            mp3Link
-          });
+          console.log("✅ Sheet Match:", { orderIdFromSheet, isSongReady, mp3Link });
           break;
         }
       }
@@ -106,6 +112,7 @@ const orders = await shopify.order.list({ name: nameQuery, limit: 1 });
     isSongReady,
     mp3Link,
     emailFromShopify: customerEmail,
+    lookupMethod,
     order: {
       name: shopifyOrder.name,
       id: shopifyOrder.id,
