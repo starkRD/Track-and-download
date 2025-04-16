@@ -6,16 +6,18 @@ import Shopify from 'shopify-api-node';
 export default async function handler(req, res) {
   // Set CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  // Handle preflight OPTIONS request
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
+  if (req.method !== 'GET') {
+    return res.status(405).json({ error: 'Method Not Allowed' });
+  }
 
-  const query = req.query.query;
-  if (!query) {
+  const queryValue = req.query.query ? req.query.query.trim() : '';
+  if (!queryValue) {
     return res.status(400).json({ error: 'Missing order ID or email.' });
   }
 
@@ -23,65 +25,71 @@ export default async function handler(req, res) {
   let customerEmail = "";
 
   try {
-    // Initialize Shopify API via environment variables
+    // Initialize Shopify
     const shopify = new Shopify({
       shopName: process.env.SHOPIFY_STORE,
       accessToken: process.env.SHOPIFY_ADMIN_TOKEN,
     });
 
-    // 1) Try EXACT user input as the order name
-    let ordersByName = await shopify.order.list({ name: query, limit: 1 });
-    if (ordersByName.length > 0) {
-      shopifyOrder = ordersByName[0];
+    // Step 1: Try exact input as name
+    let orders = await shopify.order.list({ name: queryValue, limit: 1 });
+    if (orders.length > 0) {
+      shopifyOrder = orders[0];
     } else {
-      // 2) If not found, try adding '#' prefix
-      const altNameQuery = query.startsWith('#') ? query : `#${query}`;
-      const altOrders = await shopify.order.list({ name: altNameQuery, limit: 1 });
-      if (altOrders.length > 0) {
-        shopifyOrder = altOrders[0];
-      }
-    }
-
-    // 3) Optionally, if STILL not found and the query is numeric, try numeric ID
-    if (!shopifyOrder && !isNaN(Number(query))) {
-      try {
-        shopifyOrder = await shopify.order.get(Number(query));
-      } catch (idErr) {
-        console.log("Order ID numeric lookup failed:", idErr.message);
-      }
-    }
-
-    // 4) Email-based search if STILL not found and query includes '@'
-    if (!shopifyOrder && query.includes('@')) {
-      try {
-        const emailOrders = await shopify.order.list({ email: query.toLowerCase(), limit: 1 });
-        if (emailOrders.length > 0) {
-          shopifyOrder = emailOrders[0];
+      // Step 2: Try adding '#' if not found
+      if (!queryValue.startsWith('#')) {
+        const altName = `#${queryValue}`;
+        const altOrders = await shopify.order.list({ name: altName, limit: 1 });
+        if (altOrders.length > 0) {
+          shopifyOrder = altOrders[0];
         }
-      } catch (emailError) {
-        console.log("Email-based lookup failed:", emailError.message);
       }
     }
 
-    // If after all attempts, we didn't find the order, respond with 404
+    // Step 3: If STILL not found & query is numeric, try numeric ID
+    if (!shopifyOrder && !isNaN(Number(queryValue))) {
+      try {
+        shopifyOrder = await shopify.order.get(Number(queryValue));
+      } catch (numErr) {
+        console.log("Numeric ID lookup failed:", numErr.message);
+      }
+    }
+
+    // Step 4: If STILL not found & query includes '@', search by email
+    if (!shopifyOrder && queryValue.includes('@')) {
+      try {
+        const ordersByEmail = await shopify.order.list({ email: queryValue.toLowerCase(), limit: 1 });
+        if (ordersByEmail.length > 0) {
+          shopifyOrder = ordersByEmail[0];
+        }
+      } catch (emailErr) {
+        console.log("Email-based lookup failed:", emailErr.message);
+      }
+    }
+
+    // If no order found, respond with 404
     if (!shopifyOrder) {
       return res.status(404).json({ error: 'Order not found. Please check the order number or email and try again.' });
     }
 
-    // We have a Shopify order now
-    customerEmail = (shopifyOrder.email || "").trim().toLowerCase();
+    // We have a Shopify order
+    customerEmail = (shopifyOrder.email || '').trim().toLowerCase();
 
   } catch (err) {
     console.error("Shopify error:", err);
     return res.status(500).json({ error: 'We encountered an issue connecting to our order system. Please try again later.' });
   }
 
-  // Next, check the Google Sheet for the song status (isSongReady) and mp3Link
+  // Now read columns A–E from your sheet
+  // A => Timestamp
+  // B => Order ID (row[1])
+  // C => Customer Email (row[2]) (not mandatory)
+  // D => MP3 link (row[3])
+  // E => "Is the song ready?" => yes/no (row[4])
   let isSongReady = false;
   let mp3Link = null;
 
   try {
-    // Initialize Google auth
     const auth = new google.auth.GoogleAuth({
       credentials: {
         client_email: process.env.GOOGLE_CLIENT_EMAIL,
@@ -89,41 +97,39 @@ export default async function handler(req, res) {
       },
       scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
     });
-
     const sheets = google.sheets({ version: 'v4', auth });
     const sheetId = process.env.SHEET_ID;
 
-    // We read columns A–F (adjust if your data is located elsewhere)
-    const response = await sheets.spreadsheets.values.get({
+    // Read columns A-E (5 columns) from row 2 onward
+    const sheetRes = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetId,
-      range: 'Sheet1!A2:F',
+      range: 'Sheet1!A2:E',
     });
+    const rows = sheetRes.data.values || [];
 
-    const rows = response.data.values || [];
-
-    // Remove leading '#' from the Shopify order name for matching
-    const orderName = shopifyOrder.name.replace('#', '').trim();
+    // Remove leading '#' from Shopify order name for matching
+    const orderNameNoHash = shopifyOrder.name.replace(/^#/, '').trim();
 
     for (const row of rows) {
-      // row[1] is column B, which we assume stores the internal order ID
-      const sheetOrderId = (row[1] || "").trim();
-      // row[3] is column D for the mp3 link
-      // row[5] is column F for "yes" if the song is ready
+      if (row.length < 5) continue; // skip incomplete rows
 
-      if (sheetOrderId === orderName || sheetOrderId === query.trim()) {
-        isSongReady = (row[5] || "").toLowerCase() === "yes";
+      const sheetOrderId = (row[1] || '').trim(); // Column B = Order ID
+      if (sheetOrderId === orderNameNoHash || sheetOrderId === queryValue) {
+        // row[3] = Column D => MP3 link
         mp3Link = row[3] || null;
+        // row[4] = Column E => "Is the song ready?"
+        isSongReady = (row[4] || '').toLowerCase() === 'yes';
         break;
       }
     }
-  } catch (err) {
-    console.error("Google Sheets error:", err);
-    // We won't fail the request if Sheets fails; just log error.
+  } catch (sheetErr) {
+    console.error("Google Sheets error:", sheetErr);
+    // do not fail the request, just proceed
   }
 
-  // Finally, return our result JSON
+  // Return final JSON
   return res.status(200).json({
-    isFulfilled: (shopifyOrder.fulfillment_status || "").toLowerCase() === "fulfilled",
+    isFulfilled: (shopifyOrder.fulfillment_status || '').toLowerCase() === 'fulfilled',
     isSongReady,
     mp3Link,
     emailFromShopify: customerEmail,
