@@ -28,7 +28,6 @@ export default async function handler(req, res) {
     // Search by order name (with '#' prefix), numeric ID, or email
     const nameQuery = query.startsWith("#") ? query : `#${query}`;
     const orders = await shopify.order.list({ name: nameQuery, limit: 1 });
-    
     if (orders.length > 0) {
       shopifyOrder = orders[0];
     } else if (!isNaN(Number(query))) {
@@ -61,10 +60,13 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'Issue connecting to our order system. Please try again later.' });
   }
 
+  // Use a case-insensitive check for fulfillment status.
+  const isFulfilled = (shopifyOrder.fulfillment_status || '').toLowerCase() === 'fulfilled';
+  
   let isSongReady = false;
   let mp3Link = null;
   
-  // Remove '#' from order name and trim spaces
+  // Remove any '#' prefix from the Shopify order name and trim spaces.
   const orderName = shopifyOrder.name.replace('#', '').trim();
 
   try {
@@ -79,7 +81,7 @@ export default async function handler(req, res) {
     const sheets = google.sheets({ version: 'v4', auth });
     const sheetId = process.env.SHEET_ID;
     
-    // Adjust the range if your sheet layout is different
+    // Assuming your sheet has data in columns A to E (starting from row 2)
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetId,
       range: 'Sheet1!A2:E',
@@ -88,26 +90,26 @@ export default async function handler(req, res) {
     const rows = response.data.values || [];
     for (const row of rows) {
       if (row.length >= 5) {
-        // Column B should be the Order ID
+        // Column B should have the Order ID.
         const orderIdFromSheet = (row[1] || "").trim();
         if (orderIdFromSheet === orderName || orderIdFromSheet === query.trim()) {
-          // Column E should say "yes" (case-insensitive) if the song is ready
+          // Column E should say "yes" (ignoring case/whitespace) if the song is ready.
           const readyValue = (row[4] || "").trim().toLowerCase();
           isSongReady = (readyValue === "yes");
-          // Column D should have the MP3 link
+          // Column D should have the MP3 link (e.g., a Google Drive URL).
           mp3Link = row[3] ? row[3].trim() : null;
-          console.log("DEBUG: Matching sheet row found. isSongReady:", isSongReady, "mp3Link:", mp3Link);
+          console.log("DEBUG: Matching sheet row for order", orderName, "-> isSongReady:", isSongReady, "mp3Link:", mp3Link);
           break;
         }
       }
     }
   } catch (err) {
     console.error("Google Sheets error:", err);
-    // Continue even if sheet lookup fails; button won't show if song isn't ready
+    // Continue without sheet data if there's an error
   }
 
   return res.status(200).json({
-    isFulfilled: shopifyOrder.fulfillment_status === "fulfilled",
+    isFulfilled,
     isSongReady,
     mp3Link,
     emailFromShopify: customerEmail,
