@@ -25,7 +25,7 @@ export default async function handler(req, res) {
       accessToken: process.env.SHOPIFY_ADMIN_TOKEN,
     });
 
-    // Try searching order by order name, numeric ID, or email
+    // Search by order name (with '#' prefix), numeric ID, or email
     const nameQuery = query.startsWith("#") ? query : `#${query}`;
     const orders = await shopify.order.list({ name: nameQuery, limit: 1 });
     
@@ -58,17 +58,16 @@ export default async function handler(req, res) {
     
   } catch (err) {
     console.error("Shopify error:", err);
-    return res.status(500).json({ error: 'We encountered an issue connecting to our order system. Please try again later.' });
+    return res.status(500).json({ error: 'Issue connecting to our order system. Please try again later.' });
   }
 
   let isSongReady = false;
   let mp3Link = null;
   
-  // Remove the '#' prefix from the Shopify order name if needed
+  // Remove '#' from order name and trim spaces
   const orderName = shopifyOrder.name.replace('#', '').trim();
 
   try {
-    // Google Sheets Authentication
     const auth = new google.auth.GoogleAuth({
       credentials: {
         client_email: process.env.GOOGLE_CLIENT_EMAIL,
@@ -80,32 +79,31 @@ export default async function handler(req, res) {
     const sheets = google.sheets({ version: 'v4', auth });
     const sheetId = process.env.SHEET_ID;
     
+    // Adjust the range if your sheet layout is different
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetId,
-      range: 'Sheet1!A2:E', // Adjust if your sheet has different layout
+      range: 'Sheet1!A2:E',
     });
     
     const rows = response.data.values || [];
     for (const row of rows) {
       if (row.length >= 5) {
-        // row[1] should contain the Order ID from your sheet
+        // Column B should be the Order ID
         const orderIdFromSheet = (row[1] || "").trim();
-        
-        // Compare the orderId from sheet with the Shopify order name or query input
         if (orderIdFromSheet === orderName || orderIdFromSheet === query.trim()) {
-          // row[4] should contain the flag (e.g., "yes") indicating the song is ready
+          // Column E should say "yes" (case-insensitive) if the song is ready
           const readyValue = (row[4] || "").trim().toLowerCase();
           isSongReady = (readyValue === "yes");
-          
-          // row[3] should contain the MP3 link
+          // Column D should have the MP3 link
           mp3Link = row[3] ? row[3].trim() : null;
+          console.log("DEBUG: Matching sheet row found. isSongReady:", isSongReady, "mp3Link:", mp3Link);
           break;
         }
       }
     }
   } catch (err) {
     console.error("Google Sheets error:", err);
-    // Proceed without sheet data if error occurs
+    // Continue even if sheet lookup fails; button won't show if song isn't ready
   }
 
   return res.status(200).json({
