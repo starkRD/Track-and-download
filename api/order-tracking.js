@@ -106,7 +106,11 @@ export default async function handler(req, res) {
     for (const row of rows) {
       if (row.length < 5) continue;
       const sheetOrderId = (row[1] || '').trim(); // Column B
-      if (sheetOrderId === orderNameNoHash || sheetOrderId === queryValue) {
+      const sheetEmail = (row[2] || '').trim().toLowerCase(); // Column C (Customer Email)
+      
+      // Match by order ID or by customer email if order IDs don't match
+      if (sheetOrderId === orderNameNoHash || sheetOrderId === queryValue || 
+          (sheetEmail && sheetEmail === customerEmail)) {
         mp3Link = row[3] || null;             // Column D
         isSongReady = (row[4] || '').toLowerCase() === 'yes';  // Column E
         break;
@@ -114,10 +118,10 @@ export default async function handler(req, res) {
     }
   } catch (sheetErr) {
     console.error("Google Sheets error:", sheetErr);
-    // Proceed even if sheet read fails.
+    // Proceed even if sheet read fails
   }
 
-  // Return aggregated data to the frontend.
+  // Return aggregated data to the frontend
   return res.status(200).json({
     isFulfilled: (shopifyOrder.fulfillment_status || '').toLowerCase() === 'fulfilled',
     isSongReady,
