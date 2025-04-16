@@ -90,7 +90,7 @@ Enhanced Order Tracking Page
 
 <script>
 // Replace with your deployed VERCEL endpoint URL
-const VERCEL_ENDPOINT = 'https://shopify-order-tracking.vercel.app/api/order-tracking';
+const VERCEL_ENDPOINT = 'track-and-download.vercel.app/api/order-tracking';
 
 // Variant timelines for updating tracking progress
 const variantTimelines = [
