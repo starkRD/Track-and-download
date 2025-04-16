@@ -25,7 +25,8 @@ export default async function handler(req, res) {
     });
 
     const nameQuery = query.startsWith("#") ? query : `#${query}`;
-    const orders = await shopify.order.list({ name: nameQuery, limit: 1 });
+console.log("Looking for Shopify order:", nameQuery); // ✅ Add this line
+const orders = await shopify.order.list({ name: nameQuery, limit: 1 });
 
     if (orders.length > 0) {
       shopifyOrder = orders[0];
