@@ -1,5 +1,3 @@
-// pages/api/cashfree-webhook.js
-
 import crypto from 'crypto';
 import getRawBody from 'raw-body';
 import { google } from 'googleapis';
@@ -14,31 +12,31 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).send('Method Not Allowed');
   }
-  
+
   try {
     const rawBody = await getRawBody(req, {
       length: req.headers['content-length'],
       encoding: 'utf-8',
     });
-    
+
     console.log('Raw body:', rawBody);
-    
+
     const computedSignature = computeSignature(rawBody);
     const receivedSignature = req.headers['x-webhook-signature'];
     console.log('Received Signature:', receivedSignature);
     console.log('Computed Signature:', computedSignature);
-    
+
     if (computedSignature !== receivedSignature) {
       return res.status(401).send('Unauthorized: Invalid signature');
     }
-    
+
     const payload = JSON.parse(rawBody);
-    const transactionStatus = payload.data?.order?.transaction_status;
-    const compositeOrderId = payload.data?.order?.order_id; // This is the composite id from Cashfree
-    
-    if (transactionStatus === 'SUCCESS') {
-      // Extract the base order id. Assume it's the part before the first underscore.
-      const baseOrderId = compositeOrderId ? compositeOrderId.split('_')[0] : null;
+
+    // ✅ Correct event check for Cashfree webhook
+    if (payload.event === 'PAYMENT_SUCCESS' && payload.data?.order?.order_id) {
+      const compositeOrderId = payload.data.order.order_id;
+      const baseOrderId = compositeOrderId.split('_')[0];
+
       if (baseOrderId) {
         await updateEarlyAccessRecord(baseOrderId, {
           paid: true,
@@ -49,7 +47,7 @@ export default async function handler(req, res) {
         console.error("Could not extract base order id from composite: ", compositeOrderId);
       }
     }
-    
+
     res.status(200).send('Webhook processed successfully');
   } catch (error) {
     console.error("Error processing Cashfree webhook:", error);
@@ -79,7 +77,6 @@ async function updateEarlyAccessRecord(baseOrderId, paymentData) {
   const sheetId = process.env.SHEET_ID;
 
   try {
-    // Get the entire column B (assuming order IDs are in column B, starting from row 2)
     const result = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetId,
       range: 'Sheet1!B2:B',
@@ -91,13 +88,11 @@ async function updateEarlyAccessRecord(baseOrderId, paymentData) {
       return;
     }
 
-    // Find the row that has a matching order id. Since we're storing the base order id,
-    // compare with baseOrderId.
     let rowNumber = null;
     for (let i = 0; i < rows.length; i++) {
       const sheetOrderId = rows[i][0] ? rows[i][0].trim() : "";
       if (sheetOrderId === baseOrderId.trim()) {
-        rowNumber = i + 2; // because range starts at row 2
+        rowNumber = i + 2; // since range starts from row 2
         break;
       }
     }
@@ -107,7 +102,7 @@ async function updateEarlyAccessRecord(baseOrderId, paymentData) {
       return;
     }
 
-    const updateRange = `Sheet1!F${rowNumber}`; // Assuming column F is used for early access status
+    const updateRange = `Sheet1!F${rowNumber}`; // column F = early access
     const updateResult = await sheets.spreadsheets.values.update({
       spreadsheetId: sheetId,
       range: updateRange,
