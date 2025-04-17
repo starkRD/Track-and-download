@@ -91,24 +91,24 @@ export default async function handler(req, res) {
       scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
     });
 
-    const sheets = google.sheets({ version: 'v4', auth });
-    const response = await sheets.spreadsheets.values.get({
-      spreadsheetId: process.env.SHEET_ID,
-      range: 'Sheet1!A2:E',
-    });
-
     const rows = response.data.values || [];
-    for (const row of rows) {
-      if (row.length >= 5) {
-        const orderIdFromSheet = (row[1] || "").replace('#', '').trim();
-        const readyValue = (row[4] || "").trim().toLowerCase();
+    let songs = [];
 
-        if (orderIdFromSheet === orderName || orderIdFromSheet === query.trim()) {
-          isSongReady = readyValue === 'yes';
-          mp3Link = row[3] ? row[3].trim() : null;
-          console.log("✅ Sheet Match:", { orderIdFromSheet, isSongReady, mp3Link });
-          break;
-        }
+    for (const row of rows) {
+      const orderIdFromSheet = (row[1] || "").replace('#', '').trim();
+      const isReady = ((row[4] || "").trim().toLowerCase() === 'yes');
+      const uploadCell = (row[3] || "").trim();
+
+      // match this row, and ensure the admin marked "Ready?"
+      if ((orderIdFromSheet === orderName || orderIdFromSheet === query.trim()) && isReady) {
+        // split on commas (or newlines), trim each link, discard empties
+        songs = uploadCell
+          .split(/[\n,]+/)
+          .map(link => link.trim())
+          .filter(link => link);
+
+        console.log("✅ Sheet match for", orderName, "→ songs:", songs);
+        break;
       }
     }
   } catch (err) {
