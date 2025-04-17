@@ -68,7 +68,10 @@ export default async function handler(req, res) {
       return res.status(response.status).json({ error: data.message || 'Cashfree order creation failed.' });
     }
 
-    res.status(200).json({ payment_link: data.payment_link });
+    res.status(200).json({
+  payment_link: data.payment_link,
+  payment_session_id: data.payment_session_id
+});
   } catch (err) {
     console.error("❌ Error creating Cashfree order:", err);
     res.status(500).json({ error: 'Internal Server Error' });
