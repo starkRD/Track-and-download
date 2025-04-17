@@ -8,15 +8,10 @@ module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
+  if (req.method === 'OPTIONS') return res.status(200).end();
 
-  // 2) Validate input
   const query = (req.query.query || '').trim();
-  if (!query) {
-    return res.status(400).json({ error: 'Missing order ID or email.' });
-  }
+  if (!query) return res.status(400).json({ error: 'Missing order ID or email.' });
 
   let shopifyOrder = null;
   let customerEmail = '';
@@ -27,25 +22,15 @@ module.exports = async function handler(req, res) {
       accessToken: process.env.SHOPIFY_ADMIN_TOKEN,
     });
 
-    // 3a) Lookup by name (#1234 or 1234)
     const nameQuery = query.startsWith('#') ? query : `#${query}`;
-    console.log('🔍 Trying name lookup (status:any):', nameQuery);
     const byName = await shopify.order.list({ name: nameQuery, status: 'any', limit: 1 });
     if (byName.length) shopifyOrder = byName[0];
 
-    // 3b) Fallback: numeric ID
     if (!shopifyOrder && !isNaN(Number(query))) {
-      try {
-        console.log('🔍 Trying ID lookup:', query);
-        shopifyOrder = await shopify.order.get(Number(query));
-      } catch (e) {
-        console.log('❌ Order ID lookup failed:', e.message);
-      }
+      try { shopifyOrder = await shopify.order.get(Number(query)); } catch {}
     }
 
-    // 3c) Fallback: email
     if (!shopifyOrder && query.includes('@')) {
-      console.log('🔍 Trying email lookup (status:any):', query);
       const byEmail = await shopify.order.list({ email: query.toLowerCase(), status: 'any', limit: 1 });
       if (byEmail.length) shopifyOrder = byEmail[0];
     }
@@ -62,12 +47,10 @@ module.exports = async function handler(req, res) {
     return res.status(500).json({ error: 'Error accessing Shopify API.' });
   }
 
-  // 4) Determine fulfillment
   const isFulfilled = (shopifyOrder.fulfillment_status || '').toLowerCase() === 'fulfilled';
-
-  // 5) Read Google Sheet for song links
   const orderKey = shopifyOrder.name.replace('#','').trim();
-  let songs = [];
+
+  let songs = [], isPaid = false;
   try {
     const auth = new google.auth.GoogleAuth({
       credentials: {
@@ -85,15 +68,14 @@ module.exports = async function handler(req, res) {
     const rows = sheetRes.data.values || [];
 
     for (const row of rows) {
-      const sid   = (row[1]||'').replace('#','').trim();
-      const ready = (row[4]||'').trim().toLowerCase();
-      const urls  = (row[3]||'').trim();
+      const sid   = (row[1]||'').replace('#','').trim();     // Column B = order ID
+      const urls  = (row[3]||'').trim();                     // Column D = song links
+      const ready = (row[4]||'').trim().toLowerCase();       // Column E = song ready
+      const paid  = (row[5]||'').trim().toLowerCase();       // Column F = early access paid
+
       if ((sid === orderKey || sid === query) && ready === 'yes' && urls) {
-        songs = urls
-          .split(/[\n,]+/)
-          .map(u => u.trim())
-          .filter(u => u);
-        console.log('✅ Sheet match for', sid, '→ songs:', songs);
+        songs = urls.split(/[\n,]+/).map(u => u.trim()).filter(Boolean);
+        isPaid = (paid === 'yes');
         break;
       }
     }
@@ -101,10 +83,10 @@ module.exports = async function handler(req, res) {
     console.error('Google Sheets error:', err);
   }
 
-  // 6) Respond
   return res.status(200).json({
     isFulfilled,
     songs,
+    earlyAccessPaid: isPaid,
     emailFromShopify: customerEmail,
     order: {
       name: shopifyOrder.name,
@@ -112,7 +94,7 @@ module.exports = async function handler(req, res) {
       created_at: shopifyOrder.created_at,
       fulfillment_status: shopifyOrder.fulfillment_status,
       email: customerEmail,
-      line_items: shopifyOrder.line_items.map(i=>({ variant_id: i.variant_id }))
+      line_items: shopifyOrder.line_items.map(i => ({ variant_id: i.variant_id }))
     }
   });
 };
