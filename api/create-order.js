@@ -1,6 +1,18 @@
 import { v4 as uuidv4 } from 'uuid';
 
 export default async function handler(req, res) {
+  // ✅ CORS preflight
+  if (req.method === 'OPTIONS') {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    return res.status(200).end();
+  }
+
+  // ✅ Allow POSTs from Shopify
+  res.setHeader('Access-Control-Allow-Origin', '*');
+
+  // ❌ Block non-POSTs
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
@@ -16,7 +28,6 @@ export default async function handler(req, res) {
   const baseOrderId = orderId || `ORDER_${uuidv4().slice(0, 8)}`;
   const compositeOrderId = `${baseOrderId}_${Date.now()}`;
 
-  // ✅ Add fallback values for safety
   const returnUrl = process.env.CASHFREE_RETURN_URL || 'https://songcart.in/pages/admin-orders';
   const notifyUrl = process.env.CASHFREE_NOTIFY_URL || 'https://track-and-download.vercel.app/api/cashfree-webhook';
 
@@ -36,10 +47,7 @@ export default async function handler(req, res) {
     }
   };
 
-  // ✅ Debug logs for safety
   console.log("⚙️  Sending to Cashfree:", JSON.stringify(payload, null, 2));
-  console.log("🔐 RETURN_URL:", returnUrl);
-  console.log("🔔 NOTIFY_URL:", notifyUrl);
 
   try {
     const response = await fetch('https://api.cashfree.com/pg/orders', {
@@ -48,7 +56,7 @@ export default async function handler(req, res) {
         'Content-Type': 'application/json',
         'x-client-id': process.env.CASHFREE_CLIENT_ID,
         'x-client-secret': process.env.CASHFREE_CLIENT_SECRET,
-        'x-api-version': '2022-09-01' // or your actual API version
+        'x-api-version': '2022-09-01'
       },
       body: JSON.stringify(payload)
     });
@@ -60,7 +68,7 @@ export default async function handler(req, res) {
       return res.status(response.status).json({ error: data.message || 'Cashfree order creation failed.' });
     }
 
-    res.status(200).json({ redirectUrl: data.payment_link });
+    res.status(200).json({ payment_link: data.payment_link });
   } catch (err) {
     console.error("❌ Error creating Cashfree order:", err);
     res.status(500).json({ error: 'Internal Server Error' });
