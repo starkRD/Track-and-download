@@ -6,7 +6,7 @@ import { google } from 'googleapis';
 
 export const config = {
   api: {
-    bodyParser: false, // we need raw body for signature verification
+    bodyParser: false,  // we need the raw body for signature verification
   },
 };
 
@@ -17,7 +17,7 @@ export default async function handler(req, res) {
     return res.status(405).send('Method Not Allowed');
   }
 
-  // 2) Grab raw request body as string
+  // 2) Read raw request body
   let rawBody;
   try {
     rawBody = await getRawBody(req, {
@@ -29,27 +29,7 @@ export default async function handler(req, res) {
     return res.status(400).send('Bad Request');
   }
 
-  // 3) Compute HMAC-SHA256 of rawBody using your Cashfree client secret
-  const clientSecret = process.env.CASHFREE_CLIENT_SECRET;
-  if (!clientSecret) {
-    console.error('Missing CASHFREE_CLIENT_SECRET in env');
-    return res.status(500).send('Server Misconfiguration');
-  }
-  const hmac = crypto.createHmac('sha256', clientSecret);
-  hmac.update(rawBody, 'utf8');
-  const computedSignature = hmac.digest('base64');
-
-  // 4) Compare to header
-  const receivedSignature = req.headers['x-webhook-signature'];
-  if (!receivedSignature || receivedSignature !== computedSignature) {
-    console.error('❌ Invalid webhook signature', {
-      received: receivedSignature,
-      computed: computedSignature,
-    });
-    return res.status(401).send('Unauthorized');
-  }
-
-  // 5) Parse JSON payload
+  // 3) Parse JSON
   let payload;
   try {
     payload = JSON.parse(rawBody);
@@ -58,14 +38,43 @@ export default async function handler(req, res) {
     return res.status(400).send('Bad Request');
   }
 
-  // 6) Only act on PAYMENT_SUCCESS events
+  // 4) Flatten object for signature as per Cashfree spec
+  //    Merge top‑level event fields plus all keys under data.order
+  const flat = {
+    event:      payload.event,
+    event_time: payload.event_time,
+    ...payload.data?.order
+  };
+
+  // 5) Build the postData by sorting keys and concatenating values
+  const sortedKeys = Object.keys(flat).sort();
+  const postData = sortedKeys.map(key => String(flat[key] ?? '')).join('');
+
+  // 6) Compute HMAC‑SHA256 of postData using your client secret
+  const clientSecret = process.env.CASHFREE_CLIENT_SECRET;
+  if (!clientSecret) {
+    console.error('Missing CASHFREE_CLIENT_SECRET environment variable');
+    return res.status(500).send('Server Misconfiguration');
+  }
+  const hmac = crypto.createHmac('sha256', clientSecret);
+  hmac.update(postData, 'utf8');
+  const expectedSig = hmac.digest('base64');
+
+  // 7) Compare to header
+  const receivedSig = req.headers['x-webhook-signature'];
+  if (!receivedSig || receivedSig !== expectedSig) {
+    console.error('❌ Invalid webhook signature', { receivedSig, expectedSig });
+    return res.status(401).send('Unauthorized');
+  }
+
+  // 8) Only handle successful payments
   const txStatus = payload.data?.order?.transaction_status;
   if (txStatus !== 'SUCCESS') {
-    // ignore other events
+    // no action for other statuses
     return res.status(200).send('Ignored');
   }
 
-  // 7) Extract baseOrderId (everything before first underscore)
+  // 9) Extract baseOrderId (before first "_")
   const compositeId = payload.data.order.order_id || '';
   const baseOrderId = compositeId.split('_')[0];
   if (!baseOrderId) {
@@ -73,7 +82,7 @@ export default async function handler(req, res) {
     return res.status(400).send('Bad Request');
   }
 
-  // 8) Update Google Sheet column F for this order
+  // 10) Update Google Sheet column F for this order
   try {
     const auth = new google.auth.GoogleAuth({
       credentials: {
@@ -85,26 +94,26 @@ export default async function handler(req, res) {
     const sheets = google.sheets({ version: 'v4', auth });
     const sheetId = process.env.SHEET_ID;
 
-    // read column B (order IDs) from row 2 downward
+    // Read column B (order IDs) from row 2 onward
     const readRes = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetId,
       range: 'Sheet1!B2:B',
     });
     const rows = readRes.data.values || [];
 
-    // find the matching row
+    // Find matching row
     let targetRow = null;
     for (let i = 0; i < rows.length; i++) {
       if ((rows[i][0] || '').trim() === baseOrderId.trim()) {
-        targetRow = i + 2; // because B2 is row 2
+        targetRow = i + 2; // because row 2 corresponds to index 0
         break;
       }
     }
 
     if (!targetRow) {
-      console.warn(`Order ${baseOrderId} not found in sheet column B`);
+      console.warn(`Order ${baseOrderId} not found in sheet column B`);
     } else {
-      // write "yes" into column F of that row
+      // Write "yes" into column F of that row
       await sheets.spreadsheets.values.update({
         spreadsheetId: sheetId,
         range: `Sheet1!F${targetRow}`,
@@ -115,9 +124,9 @@ export default async function handler(req, res) {
     }
   } catch (err) {
     console.error('Error updating Google Sheet:', err);
-    // we still return 200 so Cashfree won't retry uncontrollably
+    // We still return 200 so Cashfree won't retry repeatedly
   }
 
-  // 9) Respond OK
+  // 11) Respond OK
   res.status(200).send('Webhook processed');
 }
