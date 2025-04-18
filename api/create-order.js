@@ -1,31 +1,19 @@
-// File: /pages/api/create-order.js
+// File: /api/create-order.js
 
 import fetch from 'node-fetch';
 
-export const config = {
-  api: {
-    bodyParser: true,
-  },
-};
-
 export default async function handler(req, res) {
-  // 1) Handle CORS preflight
+  // Allow preflight & POST only
   if (req.method === 'OPTIONS') {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     return res.status(200).end();
   }
-
-  // 2) Only allow POST
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
 
-  // 3) Always allow CORS on the actual request
-  res.setHeader('Access-Control-Allow-Origin', '*');
-
-  // 4) Validate body
   const {
     orderId,
     amount,
@@ -33,34 +21,24 @@ export default async function handler(req, res) {
     customerEmail,
     customerPhone,
     returnUrl,
-    notifyUrl,
+    notifyUrl
   } = req.body;
 
-  if (
-    !orderId ||
-    !amount ||
-    !customerName ||
-    !customerEmail ||
-    !customerPhone ||
-    !returnUrl ||
-    !notifyUrl
-  ) {
-    return res.status(400).json({ error: 'Missing required fields' });
+  if (!orderId || !amount || !customerEmail || !returnUrl || !notifyUrl) {
+    return res.status(400).json({ error: 'Missing required parameters' });
   }
 
-  // 5) Build unique order_id
-  const cleanId = orderId.toString().replace(/^#/, '').replace(/[^A-Za-z0-9_-]/g, '');
-  const baseOrderId = `${cleanId}_${Date.now()}`;
-
-  const payload = {
+  // 1) Create the order
+  const baseOrderId = `${orderId}_${Date.now()}`;
+  const orderPayload = {
     order_id: baseOrderId,
-    order_amount: Number(amount),
+    order_amount: amount,
     order_currency: 'INR',
     customer_details: {
       customer_id: `cust_${Date.now()}`,
-      customer_name: customerName,
+      customer_name: customerName || 'Customer',
       customer_email: customerEmail,
-      customer_phone: customerPhone,
+      customer_phone: customerPhone || '9999999999',
     },
     order_meta: {
       return_url: returnUrl,
@@ -68,35 +46,61 @@ export default async function handler(req, res) {
     },
   };
 
+  let cfOrder;
   try {
-    // 6) Call Cashfree Create Order
-    const cfRes = await fetch('https://api.cashfree.com/pg/orders', {
+    const resp = await fetch('https://api.cashfree.com/pg/orders', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-client-id': process.env.CASHFREE_CLIENT_ID,
         'x-client-secret': process.env.CASHFREE_CLIENT_SECRET,
-        // use latest version or override via ENV
         'x-api-version': process.env.CASHFREE_API_VERSION || '2025-01-01',
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(orderPayload),
     });
-
-    const cfData = await cfRes.json();
-    if (!cfRes.ok) {
-      console.error('Cashfree create-order failed:', cfData);
+    cfOrder = await resp.json();
+    if (!resp.ok) {
       return res
-        .status(cfRes.status)
-        .json({ error: cfData.message || 'Cashfree order creation failed.' });
+        .status(resp.status)
+        .json({ error: cfOrder.message || 'Order creation failed' });
     }
-
-    // 7) Return both link & session‑id
-    return res.status(200).json({
-      payment_link: cfData.payment_link,            // if using payment_links API
-      payment_session_id: cfData.payment_session_id // if using hosted checkout
-    });
   } catch (err) {
-    console.error('Error in create-order handler:', err);
+    console.error('Cashfree /orders error:', err);
     return res.status(500).json({ error: 'Internal Server Error' });
   }
+
+  // 2) Generate a hosted payment link
+  let cfLink;
+  try {
+    const resp = await fetch('https://api.cashfree.com/pg/payment_links', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-client-id': process.env.CASHFREE_CLIENT_ID,
+        'x-client-secret': process.env.CASHFREE_CLIENT_SECRET,
+        'x-api-version': process.env.CASHFREE_API_VERSION || '2025-01-01',
+      },
+      body: JSON.stringify({
+        order_id: cfOrder.order_id,
+        customer_details: {
+          customer_email: customerEmail,
+          customer_phone: customerPhone || '9999999999',
+        },
+      }),
+    });
+    cfLink = await resp.json();
+    if (!resp.ok || !cfLink.payment_link_url) {
+      return res
+        .status(resp.status)
+        .json({ error: cfLink.message || 'Failed to generate payment link.' });
+    }
+  } catch (err) {
+    console.error('Cashfree /payment_links error:', err);
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+
+  // 3) Return the full URL
+  return res.status(200).json({
+    payment_link: cfLink.payment_link_url
+  });
 }
