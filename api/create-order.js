@@ -1,22 +1,21 @@
 // File: /api/create-order.js
 
-import fetch from 'node-fetch';
-
 export default async function handler(req, res) {
-  // 1) CORS & preflight
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  // Handle CORS preflight (OPTIONS)
   if (req.method === 'OPTIONS') {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     return res.status(200).end();
   }
 
-  // 2) Only allow POST
+  // Only allow POST
   if (req.method !== 'POST') {
+    res.setHeader('Allow', 'POST, OPTIONS');
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
 
-  // 3) Pull needed fields
+  // Parse and validate request body
   const {
     orderId,
     amount,
@@ -27,21 +26,23 @@ export default async function handler(req, res) {
     notifyUrl
   } = req.body;
 
-  if (!orderId || !amount || !customerEmail) {
-    return res.status(400).json({ error: 'Missing required parameters.' });
+  if (!orderId || !amount || !customerName || !customerEmail || !customerPhone) {
+    return res.status(400).json({ error: 'Missing required payment fields.' });
   }
 
-  // 4) Build your payload
+  // Build a unique base order ID
   const baseOrderId = `${orderId}_${Date.now()}`;
+
+  // Construct payload for Cashfree orders API
   const payload = {
     order_id: baseOrderId,
-    order_amount: amount,
+    order_amount: parseFloat(amount),
     order_currency: 'INR',
     customer_details: {
       customer_id: `cust_${Date.now()}`,
-      customer_name: customerName || 'Customer',
+      customer_name: customerName,
       customer_email: customerEmail,
-      customer_phone: customerPhone || '9999999999'
+      customer_phone: customerPhone
     },
     order_meta: {
       return_url: returnUrl,
@@ -50,31 +51,36 @@ export default async function handler(req, res) {
   };
 
   try {
-    // 5) Create the order
-    const cfRes = await fetch('https://api.cashfree.com/pg/orders', {
+    // Create order on Cashfree
+    const cfResponse = await fetch('https://api.cashfree.com/pg/orders', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-client-id': process.env.CASHFREE_CLIENT_ID,
         'x-client-secret': process.env.CASHFREE_CLIENT_SECRET,
-        'x-api-version': '2025-01-01'
+        'x-api-version': '2022-09-01'
       },
       body: JSON.stringify(payload)
     });
 
-    const cfData = await cfRes.json();
-    if (!cfRes.ok) {
-      console.error('Cashfree error:', cfData);
-      return res.status(cfRes.status).json({ error: cfData.message || 'Order creation failed.' });
+    const cfData = await cfResponse.json();
+    console.log('💬 Cashfree create-order response:', cfData);
+
+    if (!cfResponse.ok) {
+      return res.status(cfResponse.status).json({ error: cfData.message || 'Cashfree order creation failed.' });
     }
 
-    // 6) Return exactly what your front‐end checks for
+    // Allow cross‑origin for the response
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    
+    // Return the official payment link (preferred) and session id
     return res.status(200).json({
-      payment_link: cfData.payment_link,           // may be null
-      payment_session_id: cfData.payment_session_id // always present on v2025‑01‑01
+      payment_link: cfData.payment_link,
+      payment_session_id: cfData.payment_session_id
     });
+
   } catch (err) {
-    console.error('❌ create-order exception', err);
-    return res.status(500).json({ error: 'Internal Server Error' });
+    console.error('❌ Cashfree create-order error:', err);
+    return res.status(500).json({ error: err.message || 'Internal Server Error' });
   }
 }
