@@ -1,46 +1,46 @@
+// File: /api/create-order.js
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
 
-  try {
-    const { email, orderId } = req.body;
+  const {
+    orderId,
+    amount,
+    customerName,
+    customerEmail,
+    customerPhone,
+    returnUrl,
+    notifyUrl
+  } = req.body;
 
-    if (!email || !orderId) {
-      return res.status(400).json({ error: 'Missing email or orderId' });
+  const payload = {
+    order_id: `${orderId}_${Date.now()}`,
+    order_amount: amount,
+    order_currency: "INR",
+    customer_details: {
+      customer_id: `cust_${Date.now()}`,
+      customer_name: customerName,
+      customer_email: customerEmail,
+      customer_phone: customerPhone
+    },
+    order_meta: {
+      return_url: `${returnUrl}`,
+      notify_url: notifyUrl
     }
+  };
 
-    const baseOrderId = orderId.toString().replace('#', '');
-    const uniqueId = Date.now();
-    const fullOrderId = `${baseOrderId}_${uniqueId}`;
-
-    const payload = {
-      order_id: fullOrderId,
-      order_amount: 1,
-      order_currency: 'INR',
-      customer_details: {
-        customer_id: `cust_${uniqueId}`,
-        customer_name: 'SongCart Customer',
-        customer_email: email,
-        customer_phone: '9999999999',
-      },
-      order_meta: {
-        return_url: `${process.env.CASHFREE_RETURN_URL}?order=${baseOrderId}`,
-        notify_url: process.env.CASHFREE_NOTIFY_URL,
-      },
-    };
-
-    console.log("⚙️  Sending to Cashfree:", payload);
-
+  try {
     const response = await fetch('https://api.cashfree.com/pg/orders', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-client-id': process.env.CASHFREE_CLIENT_ID,
         'x-client-secret': process.env.CASHFREE_CLIENT_SECRET,
-        'x-api-version': '2022-09-01',
+        'x-api-version': '2022-09-01'
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(payload)
     });
 
     const data = await response.json();
@@ -52,11 +52,11 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       payment_link: data.payment_link,
-      payment_session_id: data.payment_session_id,
+      payment_session_id: data.payment_session_id
     });
 
   } catch (err) {
-    console.error("🔥 Server error:", err);
+    console.error("❌ Cashfree error:", err);
     return res.status(500).json({ error: 'Internal Server Error' });
   }
 }
