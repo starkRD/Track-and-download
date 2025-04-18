@@ -9,8 +9,8 @@ export const config = {
 
 export default async function handler(req, res) {
   console.log('Create order API called with method:', req.method);
-  
-  // 1) CORS & Preflight
+
+  // CORS & preflight
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -18,7 +18,7 @@ export default async function handler(req, res) {
     return res.status(200).end();
   }
 
-  // 2) Only POST
+  // Only POST
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
@@ -30,23 +30,21 @@ export default async function handler(req, res) {
       customerName,
       customerEmail,
       customerPhone,
-      returnUrl,
       notifyUrl
     } = req.body;
 
     console.log('Received payment request for order:', orderId);
 
-    // 3) Basic validation
+    // Validate
     if (!orderId || !amount || !customerName || !customerEmail || !customerPhone) {
-      console.log('Missing required fields:', { orderId, amount, customerName, customerEmail, customerPhone });
       return res.status(400).json({ error: 'Missing required fields.' });
     }
 
-    // 4) Build unique order_id
+    // Clean & unique order_id
     const cleanId = String(orderId).replace(/^#/, '').replace(/[^A-Za-z0-9_-]/g, '');
     const uniqueOrderId = `${cleanId}_${Date.now()}`;
 
-    // 5) Prepare payload
+    // Build payload
     const payload = {
       order_id: uniqueOrderId,
       order_amount: Number(amount),
@@ -58,61 +56,57 @@ export default async function handler(req, res) {
         customer_phone: customerPhone
       },
       order_meta: {
-        return_url: returnUrl,
-        notify_url: notifyUrl
+        // return_url removed per request
+        notify_url: notifyUrl || process.env.CASHFREE_NOTIFY_URL || null
       }
     };
 
     console.log('Cashfree payload:', JSON.stringify(payload));
 
-    // 6) Create order on Cashfree - Updated API version to 2022-09-01 which is standard
+    // Create Cashfree order
     const cfRes = await fetch('https://api.cashfree.com/pg/orders', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-client-id': process.env.CASHFREE_CLIENT_ID,
         'x-client-secret': process.env.CASHFREE_CLIENT_SECRET,
-        'x-api-version': '2022-09-01' // Changed from 2025-01-01 to current API version
+        'x-api-version': '2022-09-01'
       },
       body: JSON.stringify(payload)
     });
 
-    // Parse the response as text first to debug
-    const responseText = await cfRes.text();
-    console.log('Cashfree raw response:', responseText);
-    
-    // Try to parse it as JSON
+    const raw = await cfRes.text();
+    console.log('Cashfree raw response:', raw);
+
     let cfData;
     try {
-      cfData = JSON.parse(responseText);
+      cfData = JSON.parse(raw);
     } catch (e) {
-      console.error('Failed to parse Cashfree response as JSON:', e);
-      return res.status(500).json({ 
-        error: 'Invalid response from payment gateway',
-        details: responseText.substring(0, 100) + '...' 
+      console.error('Failed to parse Cashfree response:', e);
+      return res.status(500).json({
+        error: 'Invalid response from Cashfree',
+        details: raw.substring(0, 200)
       });
     }
 
     if (!cfRes.ok) {
-      console.error('Cashfree create-order error:', cfData);
+      console.error('Cashfree error:', cfData);
       return res
         .status(cfRes.status || 500)
-        .json({ error: cfData.message || 'Failed to create Cashfree order.' });
+        .json({ error: cfData.message || 'Cashfree order creation failed.' });
     }
 
-    // 7) Build the hosted-checkout link for the front end
     const sessionId = cfData.payment_session_id;
     if (!sessionId) {
-      console.error('No payment_session_id in response:', cfData);
-      return res.status(500).json({ error: 'No payment_session_id in Cashfree response.' });
+      console.error('No payment_session_id returned:', cfData);
+      return res.status(500).json({ error: 'Missing payment_session_id in Cashfree response.' });
     }
-    
+
+    // Build hosted checkout URL
     const paymentLink = `https://payments.cashfree.com/pg/checkout/${sessionId}`;
     console.log('Payment link created:', paymentLink);
 
-    // 8) Respond!
     return res.status(200).json({ payment_link: paymentLink });
-
   } catch (err) {
     console.error('Error in create-order handler:', err);
     return res.status(500).json({ error: 'Internal server error', details: err.message });
