@@ -1,93 +1,96 @@
-// /pages/api/create-order.js
+// pages/api/create-order.js
 import fetch from 'node-fetch';
 
 export const config = {
   api: {
-    bodyParser: false,
+    bodyParser: true,            // we need JSON parsing
   },
 };
 
 export default async function handler(req, res) {
-  // CORS preflight
+  // 1) CORS & Preflight
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     return res.status(200).end();
   }
 
+  // 2) Only POST
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
 
-  // Parse JSON
-  let body;
-  try {
-    body = await new Promise((resolve, reject) => {
-      let data = '';
-      req.on('data', chunk => data += chunk);
-      req.on('end', () => {
-        try { resolve(JSON.parse(data)); }
-        catch (err) { reject(err); }
-      });
-      req.on('error', reject);
-    });
-  } catch (err) {
-    console.error('Invalid JSON:', err);
-    return res.status(400).json({ error: 'Invalid JSON' });
+  const {
+    orderId,
+    amount,
+    customerName,
+    customerEmail,
+    customerPhone,
+    returnUrl,
+    notifyUrl
+  } = req.body;
+
+  // 3) Basic validation
+  if (!orderId || !amount || !customerName || !customerEmail || !customerPhone) {
+    return res.status(400).json({ error: 'Missing required fields.' });
   }
 
-  const { orderId, amount, customerEmail, returnUrl, notifyUrl } = body;
-  if (!orderId || !amount || !customerEmail || !returnUrl || !notifyUrl) {
-    return res.status(400).json({ error: 'Missing one of orderId,amount,customerEmail,returnUrl,notifyUrl' });
-  }
+  // 4) Build unique order_id
+  const cleanId = String(orderId).replace(/^#/, '').replace(/[^A-Za-z0-9_-]/g, '');
+  const uniqueOrderId = `${cleanId}_${Date.now()}`;
 
-  // Build payload
-  const base = String(orderId).replace(/[^A-Za-z0-9_-]/g, '');
-  const compositeOrderId = `${base}_${Date.now()}`;
+  // 5) Prepare payload
   const payload = {
-    order_id: compositeOrderId,
-    order_amount: parseFloat(amount),
+    order_id: uniqueOrderId,
+    order_amount: Number(amount),
     order_currency: 'INR',
     customer_details: {
       customer_id: `cust_${Date.now()}`,
+      customer_name: customerName,
       customer_email: customerEmail,
-      customer_phone: body.customerPhone || '0000000000',
+      customer_phone: customerPhone
     },
     order_meta: {
       return_url: returnUrl,
-      notify_url: notifyUrl,
+      notify_url: notifyUrl
     }
   };
 
-  console.log('→ CF payload:', payload);
-
-  // Call Cashfree
-  let cfRes, cfData;
   try {
-    cfRes = await fetch('https://api.cashfree.com/pg/orders', {
+    // 6) Create order on Cashfree
+    const cfRes = await fetch('https://api.cashfree.com/pg/orders', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-client-id':     process.env.CASHFREE_CLIENT_ID,
+        'x-client-id': process.env.CASHFREE_CLIENT_ID,
         'x-client-secret': process.env.CASHFREE_CLIENT_SECRET,
-        'x-api-version':   '2025-01-01',
+        'x-api-version': '2025-01-01'
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(payload)
     });
-    cfData = await cfRes.json();
-    console.log('← CF response:', cfRes.status, cfData);
+    const cfData = await cfRes.json();
+
+    if (!cfRes.ok) {
+      console.error('Cashfree create-order error:', cfData);
+      return res
+        .status(cfRes.status || 500)
+        .json({ error: cfData.message || 'Failed to create Cashfree order.' });
+    }
+
+    // 7) Build the hosted‑checkout link for the front end
+    //    Docs show: https://payments.cashfree.com/pg/checkout/{payment_session_id}
+    const sessionId = cfData.payment_session_id;
+    if (!sessionId) {
+      return res.status(500).json({ error: 'No payment_session_id in Cashfree response.' });
+    }
+    const paymentLink = `https://payments.cashfree.com/pg/checkout/${sessionId}`;
+
+    // 8) Respond!
+    return res.status(200).json({ payment_link: paymentLink });
+
   } catch (err) {
-    console.error('CF network error:', err);
-    return res.status(502).json({ error: 'Cashfree unreachable' });
+    console.error('Error in create-order handler:', err);
+    return res.status(500).json({ error: 'Internal server error' });
   }
-
-  if (!cfRes.ok) {
-    return res.status(cfRes.status).json({ error: cfData.message || 'CF returned error' });
-  }
-
-  return res.status(200).json({
-    payment_link: cfData.payment_link || null,
-    payment_session_id: cfData.payment_session_id || null,
-  });
 }
