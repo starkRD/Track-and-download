@@ -3,6 +3,24 @@
 const { google } = require('googleapis');
 const Shopify = require('shopify-api-node');
 
+function parseVariantIds(value) {
+  return String(value || '')
+    .split(',')
+    .map(v => Number(String(v).trim()))
+    .filter(Number.isFinite);
+}
+
+function normalizeOrderId(value) {
+  return String(value || '').replace('#', '').trim();
+}
+
+function splitUrls(value) {
+  return String(value || '')
+    .split(/[\n,]+/)
+    .map(u => u.trim())
+    .filter(Boolean);
+}
+
 module.exports = async function handler(req, res) {
   // 1) CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -48,9 +66,20 @@ module.exports = async function handler(req, res) {
   }
 
   const isFulfilled = (shopifyOrder.fulfillment_status || '').toLowerCase() === 'fulfilled';
-  const orderKey = shopifyOrder.name.replace('#','').trim();
+  const orderKey = normalizeOrderId(shopifyOrder.name);
+  const queryKey = normalizeOrderId(query);
 
-  let songs = [], isPaid = false;
+  const variantIds = (shopifyOrder.line_items || []).map(i => Number(i.variant_id)).filter(Number.isFinite);
+  const experimentVariantIds = parseVariantIds(process.env.EXPERIMENT_VARIANT_IDS);
+  const isExperimentOrder = experimentVariantIds.length > 0 && variantIds.some(id => experimentVariantIds.includes(id));
+  const remainingAmount = Number(process.env.EXPERIMENT_BALANCE_AMOUNT || 0);
+
+  let fullSongUrls = [];
+  let previewSongUrl = '';
+  let songUploaded = false;
+  let earlyAccessPaid = false;
+  let experimentBalancePaid = false;
+
   try {
     const auth = new google.auth.GoogleAuth({
       credentials: {
@@ -68,14 +97,19 @@ module.exports = async function handler(req, res) {
     const rows = sheetRes.data.values || [];
 
     for (const row of rows) {
-      const sid   = (row[1]||'').replace('#','').trim();     // Column B = order ID
-      const urls  = (row[3]||'').trim();                     // Column D = song links
-      const ready = (row[4]||'').trim().toLowerCase();       // Column E = song ready
-      const paid  = (row[5]||'').trim().toLowerCase();       // Column F = early access paid
+      const sid = normalizeOrderId(row[1]);                 // Column B = order ID
+      const urls = (row[3] || '').trim();                   // Column D = full song links
+      const ready = (row[4] || '').trim().toLowerCase();    // Column E = song ready
+      const paid = (row[5] || '').trim().toLowerCase();     // Column F = early access paid
+      const preview = (row[6] || '').trim();                // Column G = 30-sec preview link
+      const balancePaid = (row[7] || '').trim().toLowerCase(); // Column H = experiment balance paid
 
-      if ((sid === orderKey || sid === query) && ready === 'yes' && urls) {
-        songs = urls.split(/[\n,]+/).map(u => u.trim()).filter(Boolean);
-        isPaid = (paid === 'yes');
+      if ((sid === orderKey || sid === queryKey) && ready === 'yes' && urls) {
+        fullSongUrls = splitUrls(urls);
+        previewSongUrl = preview;
+        songUploaded = fullSongUrls.length > 0;
+        earlyAccessPaid = paid === 'yes';
+        experimentBalancePaid = balancePaid === 'yes';
         break;
       }
     }
@@ -83,10 +117,19 @@ module.exports = async function handler(req, res) {
     console.error('Google Sheets error:', err);
   }
 
+  // For experiment orders, never expose full song URLs until balance payment is done.
+  // This prevents users from grabbing the full file from browser dev tools during preview stage.
+  const songs = isExperimentOrder && !experimentBalancePaid ? [] : fullSongUrls;
+
   return res.status(200).json({
     isFulfilled,
     songs,
-    earlyAccessPaid: isPaid,
+    songUploaded,
+    previewSongUrl,
+    earlyAccessPaid,
+    isExperimentOrder,
+    experimentBalancePaid,
+    remainingAmount,
     emailFromShopify: customerEmail,
     order: {
       name: shopifyOrder.name,
